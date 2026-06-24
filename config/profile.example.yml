@@ -1,0 +1,17 @@
+# Per-ICP technical config for Sales-Signals.
+# Copy to icps/<slug>/config/profile.yml (the ICP scaffolder does this for you).
+#
+# This file holds OPTIONAL technical settings for one ICP. The ICP's substance
+# (offering, firmographics, signal→need mapping) lives in icps/<slug>/icp.md, and
+# the buying-signal queries live in icps/<slug>/signals.yml. Keep this file small.
+
+# Optional follow-up cadence preferences for `node followup-cadence.mjs`.
+# CLI flags still win for one-off runs (for example `--contacted-days 10`).
+# followup_cadence:
+#   contacted_first_days: 4
+#   contacted_subsequent_days: 4
+#   contacted_max_followups: 3
+#   replied_initial_days: 1
+#   replied_subsequent_days: 2
+#   meeting_followup_days: 1
+#   opportunity_nudge_days: 7

@@ -1,0 +1,14 @@
+{
+  "name": "sales-signals",
+  "metadata": {
+    "description": "Sales-Signals — B2B buying-signal prospecting: discover buying signals, qualify accounts, track prospects across multiple ICPs"
+  },
+  "plugins": [
+    {
+      "name": "sales-signals",
+      "source": "./",
+      "description": "B2B buying-signal prospecting pipeline — discover companies showing buying signals, qualify accounts, extract decision-maker contacts",
+      "category": "productivity"
+    }
+  ]
+}

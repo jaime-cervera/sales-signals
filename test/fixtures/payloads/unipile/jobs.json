@@ -1,0 +1,47 @@
+{
+  "_note": "REAL CAPTURE (sanitized) — derived from a live Unipile classic jobs search on 2026-06-18 (keywords: 'Machine Learning Engineer'). Confirms the RUNTIME-VALIDATE jobs contract: envelope key is `items`, the recency field is `posted_at` (ISO-8601 UTC, NOT the OpenAPI-model `listed_at`), and `company` is a nested object with `.name`. Sanitized for commit: `cursor` nulled (the real base64 cursor embeds the account_id), `reference_id` synthesized, and `company.profile_picture_url` dropped. Trimmed to 2 items.",
+  "object": "LinkedinSearch",
+  "items": [
+    {
+      "type": "JOB",
+      "id": "4417908878",
+      "reference_id": "ref_synthetic_0001",
+      "title": "AI & Automation Consultant ",
+      "location": "Madrid, Comunidad de Madrid, España (Híbrido)",
+      "posted_at": "2026-05-29T07:49:41.000Z",
+      "benefits": [],
+      "reposted": false,
+      "url": "https://www.linkedin.com/jobs/view/4417908878",
+      "promoted": true,
+      "easy_apply": true,
+      "company": {
+        "id": "39568",
+        "name": "SEIDOR",
+        "public_identifier": "seidor",
+        "profile_url": "https://www.linkedin.com/company/seidor"
+      }
+    },
+    {
+      "type": "JOB",
+      "id": "4421967937",
+      "reference_id": "ref_synthetic_0001",
+      "title": "Senior Machine Learning Engineer",
+      "location": "España (En remoto)",
+      "posted_at": "2026-06-08T16:41:57.000Z",
+      "benefits": [],
+      "reposted": false,
+      "url": "https://www.linkedin.com/jobs/view/4421967937",
+      "promoted": true,
+      "easy_apply": false,
+      "company": {
+        "id": "609749",
+        "name": "SDG Group España",
+        "public_identifier": "sdg-group-spain",
+        "profile_url": "https://www.linkedin.com/company/sdg-group-spain"
+      }
+    }
+  ],
+  "config": { "params": { "api": "classic", "category": "jobs", "keywords": "Machine Learning Engineer" } },
+  "paging": { "start": 0, "page_count": 2, "total_count": 268 },
+  "cursor": null
+}

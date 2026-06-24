@@ -1,0 +1,26 @@
+{
+  "jobs": [
+    {
+      "id": 4010001,
+      "title": "LLMOps Engineer",
+      "absolute_url": "https://job-boards.greenhouse.io/anthropic/jobs/4010001",
+      "location": { "name": "Remote - US" },
+      "first_published": "2026-01-10T09:00:00-05:00"
+    },
+    {
+      "id": 4010002,
+      "title": "Staff ML Platform Engineer",
+      "absolute_url": "https://job-boards.greenhouse.io/anthropic/jobs/4010002",
+      "location": { "name": "San Francisco, CA" },
+      "first_published": "2026-01-12T09:00:00-05:00"
+    },
+    {
+      "id": 4010003,
+      "title": "Office Manager",
+      "absolute_url": "https://job-boards.greenhouse.io/anthropic/jobs/4010003",
+      "location": { "name": "New York, NY" },
+      "first_published": "2026-01-05T09:00:00-05:00"
+    }
+  ],
+  "meta": { "total": 3 }
+}

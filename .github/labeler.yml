@@ -1,0 +1,49 @@
+"🔴 core-architecture":
+  - changed-files:
+      - any-glob-to-any-file:
+          - AGENTS.md
+          - CLAUDE.md
+          - OPENCODE.md
+          - DATA_CONTRACT.md
+          - modes/_shared.md
+
+"⚠️ agent-behavior":
+  - changed-files:
+      - any-glob-to-any-file:
+          - modes/*.md
+          - modes/**/*.md
+          - .claude/skills/**
+          - .opencode/skills/**
+          - .qwen/skills/**
+
+"🔧 scripts":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "*.mjs"
+          - bin/**
+          - lib/**
+          - providers/**
+          - batch/**
+
+"📄 docs":
+  - changed-files:
+      - any-glob-to-any-file:
+          - docs/**
+          - "README.md"
+          - SECURITY.md
+
+"📊 dashboard":
+  - changed-files:
+      - any-glob-to-any-file:
+          - dashboard/**
+
+"📦 dependencies":
+  - changed-files:
+      - any-glob-to-any-file:
+          - package.json
+          - package-lock.json
+
+"⚙️ ci":
+  - changed-files:
+      - any-glob-to-any-file:
+          - .github/**

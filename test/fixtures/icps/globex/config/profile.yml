@@ -1,0 +1,21 @@
+# Fixture ICP: globex — minimal profile (Phase-1 legacy shape; becomes icp.md in Phase 4).
+candidate:
+  full_name: "Globex Vendor"
+  email: "globex@example.com"
+  location: "Remote EU"
+
+target_roles:
+  primary:
+    - "Data Engineer"
+  archetypes:
+    - name: "Data Platform"
+      level: "Senior/Lead"
+      fit: "primary"
+
+compensation:
+  target_range: "n/a"
+  currency: "EUR"
+
+location:
+  country: "United Kingdom"
+  timezone: "GMT"

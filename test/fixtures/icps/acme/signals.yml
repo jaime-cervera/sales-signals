@@ -1,0 +1,22 @@
+# Fixture ICP: acme — seeded for ICP-isolation tests.
+# Phase-1 legacy `portals.yml` shape (renamed to signals.yml in Phase 4 with its tests).
+title_filter:
+  positive:
+    - "LLMOps"
+    - "ML Platform"
+    - "AI Infrastructure"
+  negative:
+    - "Junior"
+    - "Intern"
+  seniority_boost:
+    - "Senior"
+    - "Staff"
+    - "Head"
+
+tracked_companies:
+  - name: Anthropic
+    careers_url: https://job-boards.greenhouse.io/anthropic
+    api: https://boards-api.greenhouse.io/v1/boards/anthropic/jobs
+    enabled: true
+
+job_boards: []

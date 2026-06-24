@@ -1,0 +1,2659 @@
+#!/usr/bin/env node
+
+/**
+ * test-all.mjs — Comprehensive test suite for Sales-Signals
+ *
+ * Run before merging any PR or pushing changes.
+ * Tests: syntax, scripts, dashboard, data contract, personal data, paths.
+ *
+ * Usage:
+ *   node test-all.mjs           # Run all tests
+ *   node test-all.mjs --quick   # Skip dashboard build (faster)
+ */
+
+import { execSync, execFileSync, spawn } from 'child_process';
+import { readFileSync, existsSync, readdirSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync } from 'fs';
+import { join, dirname } from 'path';
+import { tmpdir } from 'os';
+import { fileURLToPath, pathToFileURL } from 'url';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const ROOT = __dirname;
+const QUICK = process.argv.includes('--quick');
+const NODE = process.execPath;
+
+let passed = 0;
+let failed = 0;
+let warnings = 0;
+
+/**
+ * Record and print one passing test assertion.
+ *
+ * The suite uses these small counters instead of a framework so it can run in
+ * any freshly cloned Sales-Signals checkout with only Node.js available.
+ *
+ * @param {string} msg - Human-readable success message for the terminal log.
+ * @returns {void}
+ */
+function pass(msg) { console.log(`  ✅ ${msg}`); passed++; }
+
+/**
+ * Record and print one failing test assertion.
+ *
+ * Failures increment the shared counter that controls the final process exit
+ * code, while still allowing later checks to run and show the full problem set.
+ *
+ * @param {string} msg - Human-readable failure message for the terminal log.
+ * @returns {void}
+ */
+function fail(msg) { console.log(`  ❌ ${msg}`); failed++; }
+
+/**
+ * Record and print one non-fatal warning.
+ *
+ * Warnings are used for expected local-environment gaps, such as missing user
+ * data in a clean repo, where the check should stay visible but not fail CI.
+ *
+ * @param {string} msg - Human-readable warning message for the terminal log.
+ * @returns {void}
+ */
+function warn(msg) { console.log(`  ⚠️  ${msg}`); warnings++; }
+
+/**
+ * Run a shell command or executable and return trimmed stdout on success.
+ *
+ * Array-form arguments use execFileSync to avoid shell parsing. String-only
+ * commands use execSync for existing simple checks. Failures return null so the
+ * caller can decide whether to count the result as a failure or warning.
+ *
+ * @param {string} cmd - Command or executable to run.
+ * @param {string[]} [args=[]] - Optional argument vector for execFileSync.
+ * @param {object} [opts={}] - Extra child_process options.
+ * @returns {string|null} Trimmed stdout, or null when the command fails.
+ */
+function run(cmd, args = [], opts = {}) {
+  try {
+    if (Array.isArray(args) && args.length > 0) {
+      return execFileSync(cmd, args, { cwd: ROOT, encoding: 'utf-8', timeout: 30000, ...opts }).trim();
+    }
+    return execSync(cmd, { cwd: ROOT, encoding: 'utf-8', timeout: 30000, ...opts }).trim();
+  } catch (e) {
+    return null;
+  }
+}
+
+/**
+ * Check whether a repo-relative file exists.
+ *
+ * @param {string} path - Path relative to the Sales-Signals repository root.
+ * @returns {boolean} True when the file exists.
+ */
+function fileExists(path) { return existsSync(join(ROOT, path)); }
+
+/**
+ * Read a repo-relative text file as UTF-8.
+ *
+ * @param {string} path - Path relative to the Sales-Signals repository root.
+ * @returns {string} File contents.
+ */
+function readFile(path) { return readFileSync(join(ROOT, path), 'utf-8'); }
+
+console.log('\n🧪 Sales-Signals test suite\n');
+
+// ── 1. SYNTAX CHECKS ────────────────────────────────────────────
+
+console.log('1. Syntax checks');
+
+const mjsFiles = readdirSync(ROOT).filter(f => f.endsWith('.mjs'));
+for (const f of mjsFiles) {
+  const result = run(NODE, ['--check', f]);
+  if (result !== null) {
+    pass(`${f} syntax OK`);
+  } else {
+    fail(`${f} has syntax errors`);
+  }
+}
+
+// ── 2. SCRIPT EXECUTION ─────────────────────────────────────────
+
+console.log('\n2. Script execution (graceful on empty data)');
+
+const scripts = [
+  { name: 'verify-pipeline.mjs', expectExit: 0 },
+  // --dry-run: these three scripts resolve ROOT from import.meta.url and write
+  // data/applications.md in place. On a provisioned working copy with a real
+  // tracker present, running them without --dry-run mutates user data. Harmless
+  // in this repo (no tracker shipped), risky for end users who run tests inside
+  // their active Sales-Signals workspace.
+  { name: 'normalize-statuses.mjs --dry-run', expectExit: 0 },
+  { name: 'dedup-tracker.mjs --dry-run', expectExit: 0 },
+  { name: 'merge-tracker.mjs --dry-run', expectExit: 0 },
+  { name: 'analyze-patterns.mjs --self-test', expectExit: 0 },
+  { name: 'tracker-columns-tests.mjs', expectExit: 0 },
+  { name: 'account-dedup-safety-tests.mjs', expectExit: 0 }, // append-only account invariant (Won never deleted/downgraded) — Unit 4.3 P0
+  { name: 'test-salary-filter.mjs', expectExit: 0 }, // ~90 assertions — wired so the salary-filter suite genuinely gates in CI (was orphaned; Unit 0.2)
+  { name: 'lib/icp-paths-tests.mjs', expectExit: 0 }, // ICP path-resolution layer (Unit 1.1) — the multi-ICP seam
+  { name: 'path-override-tests.mjs', expectExit: 0 }, // per-script CAREER_OPS_* override resolution (Unit 1.2)
+  { name: 'signals-launcher-tests.mjs', expectExit: 0 }, // bin/signals.mjs launcher + ICP isolation invariant (Unit 1.3)
+  { name: 'validate-signals.mjs --self-test', expectExit: 0 }, // signals.yml/icp.md validator (Unit 2.2)
+  { name: 'validate-icp-tests.mjs', expectExit: 0 }, // ICP model + validator (Units 2.1/2.2)
+  { name: 'scaffold-icp-tests.mjs', expectExit: 0 }, // ICP scaffolder + on-the-fly --create-icp (Unit 2.3)
+  { name: 'aggregate-signals-tests.mjs', expectExit: 0 }, // account-level signal aggregation (Unit 3.3)
+  { name: 'unipile-fixtures-schema-tests.mjs', expectExit: 0 }, // Unipile fixture schema guard (Unit 0.4)
+  { name: 'unipile-jobs-tests.mjs', expectExit: 0 }, // Unipile client + jobs provider (Unit 3.1)
+  { name: 'find-contacts-tests.mjs', expectExit: 0 }, // decision-maker extraction (Unit 5.1)
+  { name: 'purge-contacts-tests.mjs', expectExit: 0 }, // GDPR contact purge (Unit 5.2)
+  { name: 'validate-portals.mjs --file templates/signals.example.yml', expectExit: 0 },
+  { name: 'dangling-ref-tests.mjs', expectExit: 0 }, // guards against references to removed job-seeker surface (Unit 7.1)
+  { name: 'brand-guard-tests.mjs', expectExit: 0 }, // guards against the old product name career-ops/"AI job search" (Units 7.2/7.5)
+];
+
+for (const { name, allowFail } of scripts) {
+  const result = run(NODE, name.split(' '), { stdio: ['pipe', 'pipe', 'pipe'] });
+  if (result !== null) {
+    pass(`${name} runs OK`);
+  } else if (allowFail) {
+    warn(`${name} exited with error (expected without user data)`);
+  } else {
+    fail(`${name} crashed`);
+  }
+}
+
+// ── 2b. SUITE REGISTRY META-TEST (Unit 7.5) ─────────────────────
+// Every *-tests.mjs that EXISTS (root + lib/) MUST be wired into scripts[] above,
+// or it doesn't gate in CI — the exact bug that left test-salary-filter orphaned
+// (Unit 0.2). This generic check auto-requires future suites (e.g. the Unipile/
+// contacts suites) the moment they're created.
+console.log('\n2b. Suite registry (every *-tests.mjs is wired into scripts[])');
+{
+  const registered = new Set(scripts.map(s => s.name.split(' ')[0]));
+  const suiteFiles = [];
+  for (const f of readdirSync(ROOT)) {
+    if (f.endsWith('-tests.mjs')) suiteFiles.push(f);
+  }
+  if (existsSync(join(ROOT, 'lib'))) {
+    for (const f of readdirSync(join(ROOT, 'lib'))) {
+      if (f.endsWith('-tests.mjs')) suiteFiles.push(`lib/${f}`);
+    }
+  }
+  // test-salary-filter.mjs is a suite that doesn't match the *-tests.mjs glob but
+  // is required-registered (Unit 0.2) — assert it explicitly.
+  const requiredExtra = ['test-salary-filter.mjs'];
+  let allWired = true;
+  for (const suite of [...suiteFiles, ...requiredExtra]) {
+    if (registered.has(suite)) {
+      pass(`suite registered in scripts[]: ${suite}`);
+    } else {
+      fail(`suite NOT registered in scripts[] (won't gate in CI): ${suite}`);
+      allWired = false;
+    }
+  }
+  if (allWired) pass('all *-tests.mjs suites are wired into scripts[]');
+}
+
+// ── 3. LIVENESS CLASSIFICATION ──────────────────────────────────
+
+console.log('\n3. Liveness classification');
+
+try {
+  const { classifyLiveness } = await import(pathToFileURL(join(ROOT, 'liveness-core.mjs')).href);
+
+  const expiredChromeApply = classifyLiveness({
+    finalUrl: 'https://example.com/jobs/closed-role',
+    bodyText: 'Company Careers\nApply\nThe job you are looking for is no longer open.',
+    applyControls: [],
+  });
+  if (expiredChromeApply.result === 'expired') {
+    pass('Expired pages are not revived by nav/footer "Apply" text');
+  } else {
+    fail(`Expired page misclassified as ${expiredChromeApply.result}`);
+  }
+
+  const activeWorkdayPage = classifyLiveness({
+    finalUrl: 'https://example.workday.com/job/123',
+    bodyText: [
+      '663 JOBS FOUND',
+      'Senior AI Engineer',
+      'Join our applied AI team to ship production systems, partner with customers, and own delivery across evaluation, deployment, and reliability.',
+    ].join('\n'),
+    applyControls: ['Apply for this Job'],
+  });
+  if (activeWorkdayPage.result === 'active') {
+    pass('Visible apply controls still keep real job pages active');
+  } else {
+    fail(`Active job page misclassified as ${activeWorkdayPage.result}`);
+  }
+
+  const closedMycareersfuture = classifyLiveness({
+    finalUrl: 'https://www.mycareersfuture.gov.sg/job/engineering/senior-staff-embedded-software-engineer',
+    bodyText: [
+      'Senior Staff Embedded Software Engineer',
+      'MaxLinear Asia Singapore Private Limited',
+      '9 applications    Posted 27 Oct 2025    Closed on 26 Nov 2025',
+      'Applications have closed for this job',
+      'Log in to Apply',
+      "You'll need to log in with Singpass to verify your identity.",
+      'Roles & Responsibilities: design, develop and maintain embedded firmware for broadband communications ICs.',
+    ].join('\n'),
+    applyControls: ['Log in to Apply'],
+  });
+  if (closedMycareersfuture.result === 'expired') {
+    pass('Closed postings with "Applications have closed" banner are detected');
+  } else {
+    fail(`Closed mycareersfuture posting misclassified as ${closedMycareersfuture.result}`);
+  }
+
+  const cloudflareChallenge = classifyLiveness({
+    status: 403,
+    finalUrl: 'https://www.pracuj.pl/praca/sap-consultant,oferta,1004870954',
+    bodyText: 'www.pracuj.pl\nJust a moment...\nPerforming security verification\nThis website uses a security service to protect against malicious bots.\nRay ID: a06489bab8bc4cd7\nPerformance and Security by Cloudflare',
+    applyControls: [],
+  });
+  if (cloudflareChallenge.result === 'uncertain' && cloudflareChallenge.code === 'bot_challenge') {
+    pass('Cloudflare anti-bot challenge pages are uncertain, not expired');
+  } else {
+    fail(`Cloudflare challenge misclassified as ${cloudflareChallenge.result} (${cloudflareChallenge.code})`);
+  }
+
+  const blocked403 = classifyLiveness({
+    status: 403,
+    finalUrl: 'https://www.pracuj.pl/praca/sap-consultant,oferta,1004870954',
+    bodyText: 'Access denied',
+    applyControls: [],
+  });
+  if (blocked403.result === 'uncertain' && blocked403.code === 'access_blocked') {
+    pass('HTTP 403 is treated as access-blocked (uncertain), not expired');
+  } else {
+    fail(`HTTP 403 misclassified as ${blocked403.result} (${blocked403.code})`);
+  }
+
+  const activePolishPosting = classifyLiveness({
+    status: 200,
+    finalUrl: 'https://www.pracuj.pl/praca/administrator-sap-utilities-warszawa,oferta,1004870954',
+    bodyText: 'Administrator SAP Utilities. Connectis_. Siedziba firmy: Chmielna 71, Warszawa. '.repeat(6),
+    applyControls: ['Aplikuj Aplikuj na ogłoszenie'],
+  });
+  if (activePolishPosting.result === 'active') {
+    pass('Polish "Aplikuj" apply control marks a loaded posting active');
+  } else {
+    fail(`Polish apply control not recognized: ${activePolishPosting.result} (${activePolishPosting.code})`);
+  }
+
+  // Headed-fallback-on-challenge path (liveness-browser.mjs). Fake Playwright
+  // pages script the goto/evaluate calls so we can exercise the wrapper without
+  // launching a browser. checkUrlLiveness reads body text first, apply controls
+  // second — the fake returns them in that order.
+  const { checkUrlLivenessWithFallback, isChallengeResult, jitteredDelayMs } =
+    await import(pathToFileURL(join(ROOT, 'liveness-browser.mjs')).href);
+
+  const disabled = jitteredDelayMs(0) === 0 && jitteredDelayMs(-1) === 0;
+  let inRange = true;
+  for (let i = 0; i < 200; i += 1) {
+    const d = jitteredDelayMs(5000);
+    if (d < 5000 || d >= 10000) { inRange = false; break; }
+  }
+  if (disabled && inRange) {
+    pass('jitteredDelayMs returns 0 when disabled and stays in [base, 2*base)');
+  } else {
+    fail(`jitteredDelayMs out of spec (disabled=${disabled}, inRange=${inRange})`);
+  }
+
+  const fakePage = ({ status, finalUrl, bodyText, applyControls }) => {
+    let evalCall = 0;
+    return {
+      async goto() { return { status: () => status }; },
+      async waitForTimeout() {},
+      url() { return finalUrl; },
+      async evaluate() { evalCall += 1; return evalCall === 1 ? bodyText : applyControls; },
+    };
+  };
+  const URL = 'https://www.pracuj.pl/praca/sap-consultant,oferta,1004870954';
+  const challengePage = () => fakePage({
+    status: 403,
+    finalUrl: URL,
+    bodyText: 'Just a moment... Performing security verification. Ray ID: abc123. Cloudflare.',
+    applyControls: [],
+  });
+  const livePage = () => fakePage({
+    status: 200,
+    finalUrl: URL,
+    bodyText: 'Administrator SAP Utilities. '.repeat(20),
+    applyControls: ['Apply for this job'],
+  });
+
+  if (isChallengeResult({ result: 'uncertain', code: 'bot_challenge' }) &&
+      isChallengeResult({ result: 'uncertain', code: 'access_blocked' }) &&
+      !isChallengeResult({ result: 'expired', code: 'http_gone' }) &&
+      !isChallengeResult({ result: 'active', code: 'apply_control_visible' })) {
+    pass('isChallengeResult flags only bot_challenge/access_blocked uncertains');
+  } else {
+    fail('isChallengeResult misclassified a result');
+  }
+
+  const fellBackToActive = await checkUrlLivenessWithFallback(challengePage(), URL, {
+    getHeadedPage: async () => livePage(),
+  });
+  if (fellBackToActive.result === 'active') {
+    pass('Headed fallback recovers a challenge-blocked page as active');
+  } else {
+    fail(`Headed fallback did not recover page: ${fellBackToActive.result} (${fellBackToActive.code})`);
+  }
+
+  const noProvider = await checkUrlLivenessWithFallback(challengePage(), URL, {});
+  if (noProvider.result === 'uncertain' && noProvider.code === 'bot_challenge') {
+    pass('No fallback provider keeps the original challenge result');
+  } else {
+    fail(`Missing provider changed result to ${noProvider.result} (${noProvider.code})`);
+  }
+
+  const stillBlocked = await checkUrlLivenessWithFallback(challengePage(), URL, {
+    getHeadedPage: async () => challengePage(),
+  });
+  if (stillBlocked.result === 'uncertain' && stillBlocked.code === 'bot_challenge'
+      && /headed retry also blocked/.test(stillBlocked.reason)) {
+    pass('Persistent challenge stays uncertain after headed retry (never upgraded to expired)');
+  } else {
+    fail(`Persistent challenge mishandled: ${stillBlocked.result} (${stillBlocked.code})`);
+  }
+
+  const noHeadedAvailable = await checkUrlLivenessWithFallback(challengePage(), URL, {
+    getHeadedPage: async () => null, // headed launch failed (no display)
+  });
+  if (noHeadedAvailable.result === 'uncertain' && noHeadedAvailable.code === 'bot_challenge') {
+    pass('Headless-only environment degrades to original challenge result');
+  } else {
+    fail(`No-display degrade path wrong: ${noHeadedAvailable.result} (${noHeadedAvailable.code})`);
+  }
+
+  // SSRF guard — `rejectPrivateOrInvalid` has to refuse every URL whose host
+  // resolves to loopback / private / link-local space. The earlier guard only
+  // matched literal IPv4 patterns and bracketless IPv6, so several Chromium-
+  // routable bypasses (0.0.0.0, [::], [::1] (bracketed), [::ffff:127.0.0.1],
+  // localhost.) slipped through. These cases keep that regression covered.
+  const { rejectPrivateOrInvalid } = await import(
+    pathToFileURL(join(ROOT, 'liveness-browser.mjs')).href
+  );
+  const blockCases = [
+    ['http://0.0.0.0/admin', 'IPv4 all-zeros (Linux routes to loopback)'],
+    ['http://[::]/', 'IPv6 all-zeros (Linux routes to loopback)'],
+    ['http://[::1]/', 'IPv6 loopback (brackets included in url.hostname)'],
+    ['http://[::ffff:127.0.0.1]/', 'IPv4-mapped IPv6 loopback (dotted form)'],
+    ['http://[::ffff:7f00:1]/', 'IPv4-mapped IPv6 loopback (hex form)'],
+    ['http://[::ffff:169.254.169.254]/', 'IPv4-mapped IPv6 link-local (cloud metadata)'],
+    ['http://[fc00::1]/', 'IPv6 ULA (private)'],
+    ['http://[fe80::1]/', 'IPv6 link-local'],
+    ['http://localhost./', 'FQDN-trailing-dot localhost'],
+    ['http://localhost.localdomain/', 'localhost.localdomain alias'],
+    ['http://169.254.169.254/latest/meta-data/', 'cloud metadata IPv4 link-local'],
+    ['http://10.0.0.5/', 'IPv4 RFC1918'],
+  ];
+  let blockMissed = 0;
+  for (const [url, label] of blockCases) {
+    const verdict = rejectPrivateOrInvalid(url);
+    if (verdict?.code !== 'blocked_host') {
+      fail(`SSRF guard missed ${label}: ${url} → ${verdict ? verdict.code : 'allowed'}`);
+      blockMissed += 1;
+    }
+  }
+  if (blockMissed === 0) pass(`SSRF guard blocks ${blockCases.length} known bypass vectors`);
+
+  const allowCases = [
+    'https://boards.greenhouse.io/example/jobs/123',
+    'https://jobs.lever.co/example/abc-def',
+    'https://example.com/careers/role',
+    'https://www.pracuj.pl/praca/role,oferta,1234567',
+  ];
+  let allowDenied = 0;
+  for (const url of allowCases) {
+    if (rejectPrivateOrInvalid(url) !== null) {
+      fail(`SSRF guard false-positive on legitimate ATS URL: ${url}`);
+      allowDenied += 1;
+    }
+  }
+  if (allowDenied === 0) pass('SSRF guard lets legitimate ATS URLs through');
+
+  const protoCase = rejectPrivateOrInvalid('file:///etc/passwd');
+  if (protoCase?.code === 'unsupported_protocol') {
+    pass('SSRF guard rejects unsupported protocol');
+  } else {
+    fail(`SSRF guard let unsupported protocol through: ${protoCase?.code ?? 'allowed'}`);
+  }
+} catch (e) {
+  fail(`Liveness classification tests crashed: ${e.message}`);
+}
+
+// ── 4. DASHBOARD BUILD ──────────────────────────────────────────
+
+if (!QUICK) {
+  console.log('\n4. Dashboard build');
+  const isWindows = process.platform === 'win32';
+  const outPath = isWindows ? 'career-dashboard-test.exe' : '/tmp/career-dashboard-test';
+  const goBuild = run(`cd dashboard && go build -o ${outPath} . 2>&1`);
+  if (goBuild !== null) {
+    pass('Dashboard compiles');
+    if (isWindows) {
+      try { rmSync(join(ROOT, 'dashboard', 'career-dashboard-test.exe'), { force: true }); } catch (e) {}
+    }
+  } else {
+    fail('Dashboard build failed');
+  }
+} else {
+  console.log('\n4. Dashboard build (skipped --quick)');
+}
+
+// ── 5. DATA CONTRACT ────────────────────────────────────────────
+
+console.log('\n5. Data contract validation');
+
+// Check system files exist
+const systemFiles = [
+  'CLAUDE.md', 'OPENCODE.md', 'VERSION', 'DATA_CONTRACT.md',
+  'modes/_shared.md', 'modes/qualify.md', 'modes/scan.md',
+  'templates/states.yml', 'templates/icp.template.md',
+  '.claude/skills/career-ops/SKILL.md',
+  '.opencode/skills/career-ops/SKILL.md',
+];
+
+for (const f of systemFiles) {
+  if (fileExists(f)) {
+    pass(`System file exists: ${f}`);
+  } else {
+    fail(`Missing system file: ${f}`);
+  }
+}
+
+// Check per-ICP user files are GENUINELY gitignored. After the multi-ICP
+// relocation these live under icps/<slug>/; the old root-path `git ls-files`
+// check passed *vacuously* (the root paths no longer exist), so we use
+// `git check-ignore` to prove the .gitignore pattern actually matches — a real
+// guard against committing prospect PII / secrets in an ICP.
+const userFiles = [
+  'icps/default/config/profile.yml',
+  'icps/default/icp.md',
+  'icps/default/signals.yml',
+  'icps/default/prospects.md',
+];
+for (const f of userFiles) {
+  const ignored = run('git', ['check-ignore', f]);
+  if (ignored !== null && ignored === f) {
+    pass(`User file gitignored: ${f}`);
+  } else {
+    fail(`User file NOT gitignored (PII/secret leak risk): ${f}`);
+  }
+}
+
+const batchRunnerSource = readFile('batch/batch-runner.sh');
+const minScoreSkipIndex = batchRunnerSource.indexOf('update_state "$id" "$url" "skipped"');
+const minScoreReturnIndex = batchRunnerSource.indexOf('return 0', minScoreSkipIndex);
+const completedStateIndex = batchRunnerSource.indexOf('update_state "$id" "$url" "completed"', minScoreSkipIndex);
+if (
+  minScoreSkipIndex !== -1 &&
+  minScoreReturnIndex !== -1 &&
+  completedStateIndex !== -1 &&
+  minScoreSkipIndex < minScoreReturnIndex &&
+  minScoreReturnIndex < completedStateIndex
+) {
+  pass('Batch min-score gate returns before completed state update');
+} else {
+  fail('Batch min-score gate can fall through to completed state update');
+}
+
+if (/if \[\[ "\$status" == "completed" \|\| "\$status" == "skipped" \]\]/.test(batchRunnerSource)) {
+  pass('Batch resume treats min-score skipped offers as terminal');
+} else {
+  fail('Batch resume can reprocess min-score skipped offers');
+}
+
+if (/local total=0 completed=0 skipped=0 failed=0 pending=0/.test(batchRunnerSource) &&
+    /skipped\) skipped=\$\(\(skipped \+ 1\)\)/.test(batchRunnerSource) &&
+    /Completed: \$completed \| Skipped: \$skipped \| Failed: \$failed \| Pending: \$pending/.test(batchRunnerSource)) {
+  pass('Batch summary reports skipped offers separately from pending');
+} else {
+  fail('Batch summary can misreport skipped offers as pending');
+}
+
+// ── 6. PERSONAL DATA LEAK CHECK ─────────────────────────────────
+
+console.log('\n6. Personal data leak check');
+
+const leakPatterns = [
+  'Santiago', 'santifer.io', 'Santifer iRepair', 'Zinkee', 'ALMAS',
+  'hi@santifer.io', '688921377', '/Users/santifer/',
+];
+
+const scanExtensions = ['md', 'yml', 'html', 'mjs', 'sh', 'go', 'json'];
+const allowedFiles = [
+  // CHANGELOG.md is historical upstream release notes (provenance kept after the
+  // fork); test-all.mjs holds the leak-pattern definitions themselves.
+  'CHANGELOG.md', 'test-all.mjs',
+  // Standard project files (do not currently carry the maintainer's PII after the
+  // Sales-Signals rebrand, but listed so a legitimate future credit doesn't trip
+  // the guard).
+  'LICENSE', 'CITATION.cff', 'package.json', 'go.mod',
+];
+
+// Build pathspec for git grep — only scan tracked files matching these
+// extensions. This is what `grep -rn` was trying to do, but git-aware:
+// untracked files (debate artifacts, AI tool scratch, local plans/) and
+// gitignored files can't trigger false positives because they were never
+// going to reach a commit anyway.
+// Pathspec as an ARGUMENT ARRAY (passed via execFileSync, no shell) — git expands
+// the `*.ext` globs itself. The previous single-quoted string form worked in CI
+// (bash) but was passed LITERALLY by execSync→cmd.exe on Windows, making both leak
+// checks pass vacuously off-CI. Array form is shell-agnostic.
+const grepPathspec = scanExtensions.map(e => `*.${e}`);
+
+let leakFound = false;
+for (const pattern of leakPatterns) {
+  const result = run('git', ['grep', '-nI', pattern, '--', ...grepPathspec]);
+  if (result) {
+    for (const line of result.split('\n').filter(Boolean)) {
+      const file = line.split(':')[0];
+      if (allowedFiles.some(a => file.includes(a))) continue;
+      if (file.includes('dashboard/go.mod')) continue;
+      warn(`Possible personal data in ${file}: "${pattern}"`);
+      leakFound = true;
+    }
+  }
+}
+if (!leakFound) {
+  pass('No personal data leaks outside allowed files');
+}
+
+// ── 6b. UNIPILE SECRET LEAK CHECK ───────────────────────────────
+// The PII scan above only catches the old maintainer's data. The Sales-Signals
+// integration adds Unipile credentials (API key / DSN / account id) that must
+// NEVER be committed. Flag a committed key/DSN/bearer in any TRACKED file via
+// the same git-aware pathspec. `.env.example` holds COMMENTED placeholders
+// (e.g. `# UNIPILE_API_KEY=your_..._here`), so it is allowlisted; test-all.mjs
+// holds the pattern definitions themselves.
+const secretPatterns = [
+  // A populated Unipile API key assignment with a REAL-key-length value (≥20 chars).
+  // The length floor avoids false-positives on code that assigns a short identifier
+  // (e.g. `process.env.UNIPILE_API_KEY = key`) or fake test values, while a genuine
+  // committed token (long) still trips it.
+  'UNIPILE_API_KEY[[:space:]]*=[[:space:]]*[A-Za-z0-9._-]{20,}',
+  // A Unipile DSN pointing at a real https?:// endpoint.
+  'UNIPILE_DSN[[:space:]]*=[[:space:]]*https?://',
+  // Generic long secret / bearer token committed inline.
+  'Bearer[[:space:]]+[A-Za-z0-9._-]{20,}',
+  '(secret|token|api[_-]?key)[[:space:]]*[:=][[:space:]]*[A-Za-z0-9._-]{24,}',
+];
+const secretAllowedFiles = [
+  // .env.example ships COMMENTED placeholder assignments, not real secrets.
+  '.env.example',
+  // test-all.mjs defines these very patterns.
+  'test-all.mjs',
+];
+// Obvious non-secret placeholders/interpolations a matched value may still carry
+// (docs examples, compose `${VAR}` passthrough). A real key never looks like these.
+const placeholderHints = ['${', 'your_', '_here', '<', '...', 'changeme', 'example'];
+let secretFound = false;
+for (const pattern of secretPatterns) {
+  const result = run('git', ['grep', '-nIE', pattern, '--', ...grepPathspec]);
+  if (result) {
+    for (const line of result.split('\n').filter(Boolean)) {
+      const file = line.split(':')[0];
+      if (secretAllowedFiles.some(a => file.includes(a))) continue;
+      // The value sits after the first `:` (file) and `:` (line number).
+      const value = line.split(':').slice(2).join(':');
+      if (placeholderHints.some(h => value.includes(h))) continue;
+      // A committed key/DSN/token is a hard FAIL (must block CI), not a warning.
+      fail(`Committed secret in ${file}: matched /${pattern}/ — remove it and rotate the credential`);
+      secretFound = true;
+    }
+  }
+}
+if (!secretFound) {
+  pass('No committed Unipile keys / DSNs / bearer tokens in tracked files');
+}
+
+// ── 7. ABSOLUTE PATH CHECK ──────────────────────────────────────
+
+console.log('\n7. Absolute path check');
+
+// Same git grep approach: only scans tracked files. Untracked AI tool
+// outputs, local debate artifacts, etc. can't false-positive here.
+const absPathResult = run(
+  `git grep -n "/Users/" -- '*.mjs' '*.sh' '*.md' '*.go' '*.yml' 2>/dev/null | grep -v README.md | grep -v LICENSE | grep -v CLAUDE.md | grep -v test-all.mjs`
+);
+if (!absPathResult) {
+  pass('No absolute paths in code files');
+} else {
+  for (const line of absPathResult.split('\n').filter(Boolean)) {
+    fail(`Absolute path: ${line.slice(0, 100)}`);
+  }
+}
+
+// ── 8. MODE FILE INTEGRITY ──────────────────────────────────────
+
+console.log('\n8. Mode file integrity');
+
+const expectedModes = [
+  '_shared.md', 'scan.md', 'qualify.md', 'icp.md',
+  'batch.md', 'auto-pipeline.md', 'deep.md',
+  'pipeline.md', 'tracker.md', 'patterns.md', 'followup.md',
+];
+
+for (const mode of expectedModes) {
+  if (fileExists(`modes/${mode}`)) {
+    pass(`Mode exists: ${mode}`);
+  } else {
+    fail(`Missing mode: ${mode}`);
+  }
+}
+
+// Check _shared.md references the per-ICP definition (icp.md) + account-fit scoring
+const shared = readFile('modes/_shared.md');
+if (shared.includes('icp.md') && /account-fit/i.test(shared) && /ICP fit/.test(shared)) {
+  pass('_shared.md references icp.md and the account-fit scoring dimensions');
+} else {
+  fail('_shared.md does NOT reference icp.md / account-fit scoring');
+}
+
+// qualify mode (Unit 4.2): report header has ICP/Signal/ICPScore/Status/Contact +
+// references the 5 account-fit dimensions and the account TSV write path.
+const qualifyMode = fileExists('modes/qualify.md') ? readFile('modes/qualify.md') : '';
+if (
+  /\*\*ICP:\*\*/.test(qualifyMode) && /\*\*Signal:\*\*/.test(qualifyMode) &&
+  /\*\*ICPScore:\*\*/.test(qualifyMode) && /\*\*Status:\*\*/.test(qualifyMode) &&
+  /\*\*Contact:\*\*/.test(qualifyMode) &&
+  /ICP fit/.test(qualifyMode) && /signal strength/i.test(qualifyMode) &&
+  /tracker-additions/.test(qualifyMode)
+) {
+  pass('qualify.md has the CRM report header + 5 dimensions + account-TSV write path');
+} else {
+  fail('qualify.md missing CRM report header / dimensions / tracker-additions path');
+}
+
+// scan.md is reframed for buying-signal discovery (Unit 3.2): Unipile primary,
+// per-company aggregation, signal strength — while keeping the scan-engine flow.
+const scanModeDoc = readFile('modes/scan.md');
+if (
+  /[Bb]uying[- ]?[Ss]ignal/.test(scanModeDoc) &&
+  /unipile-jobs/.test(scanModeDoc) &&
+  /aggregate-signals/.test(scanModeDoc) &&
+  /signal[- ]?strength/i.test(scanModeDoc)
+) {
+  pass('scan.md reframed for buying-signal discovery (Unipile primary + per-company aggregation)');
+} else {
+  fail('scan.md not reframed for buying-signal discovery');
+}
+
+// The discovery menu must expose the focused Sales-Signals mode set and must NOT
+// advertise any of the removed job-seeker modes (Unit 7.1).
+const REMOVED_SKILL_MENU = ['/career-ops latex', '/career-ops pdf', '/career-ops apply', '/career-ops oferta', '/career-ops interview', '/career-ops contacto'];
+for (const skillPath of ['.claude/skills/career-ops/SKILL.md', '.agents/skills/career-ops/SKILL.md']) {
+  if (!fileExists(skillPath)) {
+    fail(`${skillPath} is missing`);
+    continue;
+  }
+  const skill = readFile(skillPath);
+  if (skill.includes('/career-ops qualify') && skill.includes('/career-ops scan')) {
+    pass(`${skillPath} exposes the focused Sales-Signals menu (qualify + scan)`);
+  } else {
+    fail(`${skillPath} does not expose the focused Sales-Signals menu`);
+  }
+  const leaked = REMOVED_SKILL_MENU.filter((m) => skill.includes(m));
+  if (leaked.length === 0) {
+    pass(`${skillPath} no longer advertises removed job-seeker modes`);
+  } else {
+    fail(`${skillPath} still advertises removed modes: ${leaked.join(', ')}`);
+  }
+}
+
+const autoPipelineMode = readFile('modes/auto-pipeline.md');
+if (
+  autoPipelineMode.includes('## Step 0.5 — Liveness gate') &&
+  autoPipelineMode.includes('closed posting evidence') &&
+  autoPipelineMode.includes('Do not continue to Step 1 until this gate is resolved')
+) {
+  pass('auto-pipeline gates dead links before evaluation');
+} else {
+  fail('auto-pipeline missing liveness gate before evaluation');
+}
+
+// ── 9. LOCAL PARSER CONTRACT ────────────────────────────────────
+
+console.log('\n9. Local parser contract');
+
+const scanScript = readFile('scan.mjs');
+if (
+  scanScript.includes('typeof entry.name !== \'string\'') &&
+  scanScript.includes('entry.name.trim()') &&
+  scanScript.includes('entry.name.toLowerCase()')
+) {
+  pass('scan.mjs guards company names before filtering');
+} else {
+  fail('scan.mjs does not guard company names before filtering');
+}
+
+if (
+  scanScript.includes("skipIds: ['local-parser']") &&
+  scanScript.includes('local parser failed, used API fallback') &&
+  scanScript.includes('resolveProvider(company, providers')
+) {
+  pass('scan.mjs falls back to ATS API when local parser fails');
+} else {
+  fail('scan.mjs does not fall back to ATS API when local parser fails');
+}
+
+if (fileExists('providers/local-parser.mjs')) {
+  pass('local-parser provider module exists');
+} else {
+  fail('local-parser provider module is missing');
+}
+
+const scanMode = fileExists('modes/scan.md') ? readFile('modes/scan.md') : '';
+if (
+  scanMode.includes('local_parser_ok') &&
+  (scanMode.includes('No Expensive Scraping Repetition') || scanMode.includes('no repetir scraping caro')) &&
+  (scanMode.includes('name not listed in `local_parser_ok`') || scanMode.includes('nombre no listado en `local_parser_ok`'))
+) {
+  pass('scan.md skips expensive levels after successful local parser');
+} else {
+  fail('scan.md missing local_parser_ok skip rules for agent scan');
+}
+
+if (!fileExists('scripts/parsers/cohere_jobs.py')) {
+  pass('Cohere parser example is not bundled as a runtime script');
+} else {
+  fail('Cohere parser example is still bundled as a runtime script');
+}
+
+// ── 10. SIGNALS CONFIG VALIDATOR ────────────────────────────────
+
+console.log('\n10. Signals config validator');
+
+try {
+  const tmp = mkdtempSync(join(tmpdir(), 'sales-signals-validator-'));
+  const validPath = join(tmp, 'valid.yml');
+  const invalidProviderPath = join(tmp, 'invalid-provider.yml');
+  const emptyKeywordPath = join(tmp, 'empty-keyword.yml');
+  const duplicateCompanyPath = join(tmp, 'duplicate-company.yml');
+
+  writeFileSync(validPath, `
+title_filter:
+  positive: ["AI"]
+  negative: ["Intern"]
+tracked_companies:
+  - name: "Acme"
+    careers_url: "https://jobs.lever.co/acme"
+`, 'utf-8');
+
+  writeFileSync(invalidProviderPath, `
+title_filter:
+  positive: ["AI"]
+tracked_companies:
+  - name: "Acme"
+    provider: "missing-provider"
+    careers_url: "https://jobs.lever.co/acme"
+`, 'utf-8');
+
+  writeFileSync(emptyKeywordPath, `
+title_filter:
+  positive: ["AI", "   "]
+tracked_companies:
+  - name: "Acme"
+    careers_url: "https://jobs.lever.co/acme"
+`, 'utf-8');
+
+  writeFileSync(duplicateCompanyPath, `
+title_filter:
+  positive: ["AI"]
+tracked_companies:
+  - name: "Acme"
+    careers_url: "https://jobs.lever.co/acme"
+  - name: " acme "
+    careers_url: "https://jobs.lever.co/acme2"
+`, 'utf-8');
+
+  const validResult = run(NODE, ['validate-portals.mjs', '--file', validPath]);
+  if (validResult !== null && validResult.includes('0 errors')) {
+    pass('validate-portals accepts a minimal valid portals file');
+  } else {
+    fail('validate-portals should accept a minimal valid portals file');
+  }
+
+  const exampleResult = run(NODE, ['validate-portals.mjs', '--file', 'templates/signals.example.yml']);
+  if (exampleResult !== null && exampleResult.includes('0 errors')) {
+    pass('validate-portals accepts templates/signals.example.yml');
+  } else {
+    fail('validate-portals should accept templates/signals.example.yml');
+  }
+
+  const invalidProviderResult = run(NODE, ['validate-portals.mjs', '--file', invalidProviderPath]);
+  if (invalidProviderResult === null) {
+    pass('validate-portals rejects unknown explicit providers');
+  } else {
+    fail('validate-portals should reject unknown explicit providers');
+  }
+
+  const emptyKeywordResult = run(NODE, ['validate-portals.mjs', '--file', emptyKeywordPath]);
+  if (emptyKeywordResult === null) {
+    pass('validate-portals rejects empty title/location keywords');
+  } else {
+    fail('validate-portals should reject empty title/location keywords');
+  }
+
+  const duplicateCompanyResult = run(NODE, ['validate-portals.mjs', '--file', duplicateCompanyPath]);
+  if (duplicateCompanyResult !== null && duplicateCompanyResult.includes('1 warning')) {
+    pass('validate-portals warns on duplicate enabled company names');
+  } else {
+    fail('validate-portals should warn on duplicate enabled company names');
+  }
+
+  rmSync(tmp, { recursive: true, force: true });
+} catch (e) {
+  fail(`portals validator tests crashed: ${e.message}`);
+}
+
+// ── 11. AGENTS.md INTEGRITY ─────────────────────────────────────
+
+console.log('\n11. AGENTS.md integrity');
+
+const agents = readFile('AGENTS.md');
+const requiredSections = [
+  'Data Contract', 'Ethical Use',
+  'Offer Verification', 'Canonical States', 'TSV Format',
+  'First Run', 'Onboarding',
+];
+
+for (const section of requiredSections) {
+  if (agents.includes(section)) {
+    pass(`AGENTS.md has section: ${section}`);
+  } else {
+    fail(`AGENTS.md missing section: ${section}`);
+  }
+}
+
+// ── 11. CLI WRAPPER FILE INTEGRITY ──────────────────────────
+
+console.log('\n11. CLI wrapper file integrity');
+
+const cliWrappers = ['CLAUDE.md', 'OPENCODE.md', 'GEMINI.md'];
+for (const f of cliWrappers) {
+  if (!fileExists(f)) {
+    fail(`Missing CLI wrapper: ${f}`);
+    continue;
+  }
+  const content = readFile(f);
+  if (content.includes('AGENTS.md')) {
+    pass(`${f} references AGENTS.md`);
+  } else {
+    fail(`${f} does NOT reference AGENTS.md`);
+  }
+}
+
+// ── 12. SKILL SYMLINK INTEGRITY ─────────────────────────────
+
+console.log('\n12. Skill symlink integrity');
+
+const canonicalSkill = '.agents/skills/career-ops/SKILL.md';
+const symlinks = [
+  '.claude/skills/career-ops/SKILL.md',
+  '.opencode/skills/career-ops/SKILL.md',
+  '.qwen/skills/career-ops/SKILL.md',
+];
+
+let canonicalReal = null;
+try {
+  canonicalReal = realpathSync(join(ROOT, canonicalSkill));
+  pass(`Canonical skill resolves: ${canonicalSkill}`);
+} catch {
+  fail(`Canonical skill not found: ${canonicalSkill}`);
+}
+
+for (const link of symlinks) {
+  let resolved = null;
+  let target = null;
+  try {
+    target = realpathSync(join(ROOT, link));
+  } catch {
+    target = null;
+  }
+  if (target === null) {
+    fail(`Symlink missing: ${link}`);
+    continue;
+  }
+  try {
+    resolved = realpathSync(join(ROOT, link));
+  } catch {
+    resolved = null;
+  }
+  if (resolved === canonicalReal) {
+    pass(`${link} → canonical skill`);
+  } else {
+    fail(`${link} resolves to ${resolved}, expected ${canonicalReal}`);
+  }
+}
+
+// ── 14. VERSION FILE ─────────────────────────────────────────────
+
+console.log('\n14. Version file');
+
+if (fileExists('VERSION')) {
+  // VERSION may carry a release-please marker, e.g. "1.9.0 # x-release-please-version".
+  // Validate the first whitespace-delimited token.
+  const version = readFile('VERSION').trim().split(/\s+/)[0];
+  if (/^\d+\.\d+\.\d+$/.test(version)) {
+    pass(`VERSION is valid semver: ${version}`);
+  } else {
+    fail(`VERSION is not valid semver: "${version}"`);
+  }
+} else {
+  fail('VERSION file missing');
+}
+
+// ── 15. LOCATION FILTER — always_allow tier ───────────────────────
+
+console.log('\n15. Location filter — always_allow tier');
+
+try {
+  const { buildLocationFilter, buildCompanyFilter, shouldDedupScanHistoryRow } = await import(pathToFileURL(join(ROOT, 'scan.mjs')).href);
+
+  const filter = buildLocationFilter({
+    always_allow: ['belgium', 'brussels'],
+    allow: ['europe', 'emea', 'remote'],
+    block: ['france', 'germany', 'united states'],
+  });
+
+  // Case 1: home-region passes regardless of other text
+  if (filter('Brussels, Belgium') === true) pass('Brussels, Belgium passes (always_allow hit)');
+  else fail('Brussels, Belgium should pass');
+
+  // Case 2: always_allow wins over block (THE motivating case for this tier)
+  if (filter('Remote, Belgium or France') === true) pass('Remote, Belgium or France passes (always_allow beats block)');
+  else fail('Remote, Belgium or France should pass — always_allow must win over block');
+
+  // Case 3: no always_allow hit, block still rejects
+  if (filter('Paris, France') === false) pass('Paris, France is rejected (block still applies)');
+  else fail('Paris, France should be rejected');
+
+  // Case 4: empty location → pass (existing semantics, unchanged)
+  if (filter('') === true) pass('empty location passes (unchanged semantics)');
+  else fail('empty location should pass');
+
+  // Case 5: case-insensitivity
+  if (filter('BRUSSELS, BELGIUM') === true) pass('case-insensitive match works');
+  else fail('case-insensitive match failed');
+
+  // Case 6: backward compatibility — no always_allow key behaves like stock allow/block
+  const stockFilter = buildLocationFilter({
+    allow: ['europe', 'remote'],
+    block: ['france'],
+  });
+  if (stockFilter('Remote, Belgium or France') === false) pass('without always_allow, block still wins (backward compatible)');
+  else fail('without always_allow, behaviour must match stock allow/block (block wins)');
+
+  // Case 7: null/missing locationFilter → pass-all filter (early-return path)
+  const nullFilter = buildLocationFilter(null);
+  if (nullFilter('Anywhere on Earth') === true && nullFilter('') === true) {
+    pass('null locationFilter returns a pass-all filter (early-return path)');
+  } else {
+    fail('null locationFilter should return a pass-all filter');
+  }
+
+  // Case 8: string-instead-of-array → wrapped to a 1-item list
+  const stringFilter = buildLocationFilter({ always_allow: 'belgium', block: ['france'] });
+  if (stringFilter('Remote, Belgium or France') === true) {
+    pass('always_allow as a bare string is wrapped to a single-item list');
+  } else {
+    fail('always_allow as a bare string should still work');
+  }
+
+  // Case 9: null/non-string items are filtered out (no crash, no false matches)
+  const messyFilter = buildLocationFilter({
+    always_allow: [null, 'belgium', 42, undefined],
+    block: ['france', null, 7],
+  });
+  if (messyFilter('Brussels, Belgium') === true && messyFilter('Paris, France') === false) {
+    pass('non-string entries (null, numbers, undefined) are filtered out without crashing');
+  } else {
+    fail('mixed-type keyword lists should not crash and should still match string entries');
+  }
+
+  // Case 10: all-null/non-string list → empty after normalization (no false rejects)
+  const allBadFilter = buildLocationFilter({ block: [null, 42, undefined], allow: ['remote'] });
+  if (allBadFilter('Remote') === true) {
+    pass('a block list with only non-string entries normalizes to [] (no false rejects)');
+  } else {
+    fail('non-string-only block list should not cause rejection');
+  }
+
+  // Case 11: empty / whitespace-only entries are dropped (would otherwise pass-all via includes(''))
+  const emptyKeywordFilter = buildLocationFilter({
+    always_allow: ['', '  '],
+    allow: ['remote'],
+    block: ['france'],
+  });
+  if (emptyKeywordFilter('Paris, France') === false) {
+    pass('empty/whitespace always_allow entries are dropped (no pass-all via includes(""))');
+  } else {
+    fail('empty always_allow entries should NOT bypass block — would have made the filter pass-all');
+  }
+
+  // Case 12: surrounding whitespace is trimmed so the keyword still matches
+  const whitespaceFilter = buildLocationFilter({
+    always_allow: ['  Belgium  ', '\tBrussels\n'],
+    block: ['france'],
+  });
+  if (whitespaceFilter('Remote, Belgium or France') === true) {
+    pass('whitespace-padded keywords still match after trim');
+  } else {
+    fail('"  Belgium  " should be trimmed and still match "Remote, Belgium or France"');
+  }
+
+  // Case 13: whitespace-only location is treated as missing (pass-all-tiers)
+  if (filter('   \t  ') === true) pass('whitespace-only location passes (treated as missing)');
+  else fail('whitespace-only location should pass');
+
+  // Case 14: non-string location (number/object/null) → pass without throwing
+  let crashed = false;
+  try {
+    const r1 = filter(42);
+    const r2 = filter({ city: 'Brussels' });
+    const r3 = filter(null);
+    const r4 = filter(undefined);
+    if (r1 === true && r2 === true && r3 === true && r4 === true) {
+      pass('non-string location values (number, object, null, undefined) pass without throwing');
+    } else {
+      fail(`non-string location results: number=${r1}, object=${r2}, null=${r3}, undefined=${r4}`);
+    }
+  } catch (e) {
+    crashed = true;
+    fail(`non-string location crashed: ${e.message}`);
+  }
+
+  // Case 15: a malformed location (e.g. legacy object) does NOT bypass block when interpreted naively —
+  // the guard returns true (pass) BEFORE block/allow even run, which is correct: scoring/eval happens
+  // downstream from the scan filter, so malformed locations should fall through to the manual evaluation
+  // step rather than being silently dropped here.
+  if (filter(42) === true) pass('non-string locations are passed through to downstream evaluation, not silently dropped');
+  else fail('non-string locations should pass through');
+
+  if (
+    shouldDedupScanHistoryRow({ firstSeen: '2026-06-01', status: 'added' }, { recheckAfterDays: 30, today: '2026-06-10' }) === true &&
+    shouldDedupScanHistoryRow({ firstSeen: '2026-05-01', status: 'added' }, { recheckAfterDays: 30, today: '2026-06-10' }) === false &&
+    shouldDedupScanHistoryRow({ firstSeen: '2026-02-31', status: 'added' }, { recheckAfterDays: 30, today: '2026-06-10' }) === true &&
+    shouldDedupScanHistoryRow({ firstSeen: '2026-05-01', status: 'skipped_blocked_host' }, { recheckAfterDays: 30, today: '2026-06-10' }) === true &&
+    shouldDedupScanHistoryRow({ firstSeen: '2026-05-01', status: 'added' }, { today: '2026-06-10' }) === true &&
+    scanScript.includes('Recheck eligible:')
+  ) {
+    pass('scan-history TTL rechecks old added URLs while permanent statuses stay deduped');
+  } else {
+    fail('scan-history TTL policy did not match expected recheck/permanent behavior');
+  }
+
+  // ── Company filter (BPO/staffing blocklist) ──────────────────────
+  const noCompanyFilter = buildCompanyFilter(null);
+  if (noCompanyFilter('Anyone Inc') === true && noCompanyFilter('') === true) {
+    pass('null company_filter returns a pass-all filter');
+  } else {
+    fail('null company_filter should pass everything');
+  }
+  const emptyBlock = buildCompanyFilter({ block: [] });
+  if (emptyBlock('Emapta Global') === true) pass('empty company block list passes everything');
+  else fail('empty company block list should pass everything');
+
+  const companyFilter = buildCompanyFilter({ block: ['Emapta', 'BA Global Talent', 'Hays'] });
+  if (companyFilter('Emapta Global') === false) pass('blocked company (substring, case-insensitive) is rejected');
+  else fail('"Emapta Global" should be blocked by "Emapta"');
+  if (companyFilter('BIZNEO HR') === true) pass('a non-blocked company passes');
+  else fail('"BIZNEO HR" should pass the company filter');
+  if (companyFilter('') === true && companyFilter(null) === true && companyFilter(42) === true) {
+    pass('empty/non-string company values pass without throwing');
+  } else {
+    fail('empty/non-string company should pass the company filter');
+  }
+  // non-string entries in the block list must not crash and must still match strings
+  const messyCompanyFilter = buildCompanyFilter({ block: [null, 'hays', 42, undefined] });
+  if (messyCompanyFilter('Hays Recruiting') === false && messyCompanyFilter('Stripe') === true) {
+    pass('company block list with non-string entries normalizes without crashing');
+  } else {
+    fail('mixed-type company block list should match string entries and ignore the rest');
+  }
+
+} catch (e) {
+  fail(`always_allow tests crashed: ${e.message}`);
+}
+// ── 12. FOLLOW-UP CADENCE LOGIC ─────────────────────────────────
+
+console.log('\n12. Follow-up cadence logic');
+
+try {
+  const cadence = await import(pathToFileURL(join(ROOT, 'followup-cadence.mjs')).href);
+
+  // CLI regression: the import.meta.url guard must still let the module run as a CLI.
+  // Data-independent — default mode emits the result as JSON: a `metadata` object when
+  // the tracker has applications, or an `{error}` object (exit 1) when it is empty.
+  // Empty output would mean the guard wrongly suppressed main().
+  let cliOut = '';
+  try {
+    cliOut = execFileSync(NODE, [join(ROOT, 'followup-cadence.mjs')], { cwd: ROOT, encoding: 'utf-8', timeout: 30000 });
+  } catch (cliErr) {
+    cliOut = `${cliErr.stdout || ''}`; // exit 1 on an empty tracker is expected; keep stdout
+  }
+  let cliJson = null;
+  try { cliJson = JSON.parse(cliOut.trim()); } catch { /* leave null → fail below */ }
+  if (cliJson && typeof cliJson === 'object' && ('metadata' in cliJson || 'error' in cliJson)) {
+    pass('CLI still executes under the import.meta.url guard (emits result JSON)');
+  } else {
+    fail('CLI produced no structured JSON when run directly — import.meta.url guard may be broken');
+  }
+
+  // Date helpers
+  if (cadence.addDays(cadence.parseDate('2026-05-01'), 7) === '2026-05-08') {
+    pass('addDays advances a parsed date by N days (UTC)');
+  } else {
+    fail(`addDays produced ${cadence.addDays(cadence.parseDate('2026-05-01'), 7)}`);
+  }
+  if (cadence.daysBetween(cadence.parseDate('2026-05-01'), cadence.parseDate('2026-05-08')) === 7) {
+    pass('daysBetween counts whole days between two dates');
+  } else {
+    fail('daysBetween miscounted');
+  }
+  if (cadence.parseDate('not-a-date') === null && cadence.parseDate('2026-05-01') instanceof Date) {
+    pass('parseDate rejects malformed input and accepts ISO dates');
+  } else {
+    fail('parseDate validation wrong');
+  }
+
+  // Status normalization (strips bold + trailing date, lowercases, maps SALES aliases)
+  if (cadence.normalizeStatus('**Contacted** 2026-05-01') === 'contacted') {
+    pass('normalizeStatus strips bold + trailing date and lowercases');
+  } else {
+    fail(`normalizeStatus produced ${cadence.normalizeStatus('**Contacted** 2026-05-01')}`);
+  }
+  if (cadence.normalizeStatus('Outreach') === 'contacted' && cadence.normalizeStatus('Responded') === 'replied') {
+    pass('normalizeStatus maps sales aliases (outreach→contacted, responded→replied)');
+  } else {
+    fail('normalizeStatus sales alias mapping wrong');
+  }
+
+  const cadenceTmp = mkdtempSync(join(tmpdir(), 'co-cadence-'));
+  const profilePath = join(cadenceTmp, 'profile.yml');
+  writeFileSync(profilePath, [
+    'followup_cadence:',
+    '  contacted_first_days: 11',
+    '  contacted_subsequent_days: 5',
+    '  contacted_max_followups: 4',
+    '  replied_initial_days: 2',
+    '  replied_subsequent_days: 6',
+    '  meeting_followup_days: 3',
+    '  opportunity_nudge_days: 8',
+  ].join('\n'));
+
+  const profileCadence = cadence.resolveCadenceConfig({ profilePath });
+  if (
+    profileCadence.contacted_first === 11 &&
+    profileCadence.contacted_subsequent === 5 &&
+    profileCadence.contacted_max_followups === 4 &&
+    profileCadence.replied_initial === 2 &&
+    profileCadence.replied_subsequent === 6 &&
+    profileCadence.meeting_followup === 3 &&
+    profileCadence.opportunity_nudge === 8
+  ) {
+    pass('follow-up cadence reads profile.yml overrides');
+  } else {
+    fail(`profile cadence override failed: ${JSON.stringify(profileCadence)}`);
+  }
+
+  const cliCadence = cadence.resolveCadenceConfig({ profilePath, contactedDays: 9 });
+  if (cliCadence.contacted_first === 9 && cliCadence.contacted_subsequent === 5) {
+    pass('follow-up cadence CLI override wins over profile contacted_first');
+  } else {
+    fail(`CLI cadence override failed: ${JSON.stringify(cliCadence)}`);
+  }
+
+  const malformedProfile = join(cadenceTmp, 'malformed.yml');
+  writeFileSync(malformedProfile, 'followup_cadence: [');
+  const fallbackCadence = cadence.resolveCadenceConfig({ profilePath: malformedProfile });
+  if (fallbackCadence.contacted_first === cadence.DEFAULT_CADENCE.contacted_first) {
+    pass('follow-up cadence ignores malformed optional profile config');
+  } else {
+    fail(`malformed profile did not fall back to defaults: ${JSON.stringify(fallbackCadence)}`);
+  }
+
+  rmSync(cadenceTmp, { recursive: true, force: true });
+
+  // Urgency decision tree (CADENCE defaults: contacted_first=4, contacted_max_followups=3,
+  // replied_initial=1, replied_subsequent=2, meeting_followup=1, opportunity_nudge=5)
+  const urgencyCases = [
+    [['contacted', 4, null, 0], 'overdue', 'contacted past contacted_first → overdue (chase a non-reply)'],
+    [['contacted', 2, null, 0], 'waiting', 'contacted within window → waiting'],
+    [['contacted', 30, null, 3], 'cold', 'contacted at max follow-ups → cold'],
+    [['replied', 0, null, 0], 'urgent', 'replied before replied_initial → urgent (warm thread)'],
+    [['meeting', 1, null, 0], 'overdue', 'meeting past post-meeting window → overdue'],
+    [['opportunity', 5, null, 0], 'overdue', 'opportunity past deal-nudge window → overdue'],
+    [['won', 99, null, 0], 'waiting', 'won is terminal → no follow-up (waiting)'],
+  ];
+  for (const [args, expected, label] of urgencyCases) {
+    const got = cadence.computeUrgency(...args);
+    if (got === expected) pass(`computeUrgency: ${label}`);
+    else fail(`computeUrgency ${label}: expected ${expected}, got ${got}`);
+  }
+
+  // Next follow-up date scheduling
+  const nextCases = [
+    [['contacted', '2026-05-01', null, 0], '2026-05-05', 'first contacted follow-up = signalDate + contacted_first'],
+    [['contacted', '2026-05-01', null, 3], null, 'cold (max follow-ups) → null'],
+    [['meeting', '2026-05-01', null, 0], '2026-05-02', 'meeting follow-up = signalDate + meeting_followup'],
+    [['opportunity', '2026-05-01', null, 0], '2026-05-06', 'opportunity nudge = signalDate + opportunity_nudge'],
+    [['won', '2026-05-01', null, 0], null, 'won is terminal → no next follow-up'],
+  ];
+  for (const [args, expected, label] of nextCases) {
+    const got = cadence.computeNextFollowupDate(...args);
+    if (got === expected) pass(`computeNextFollowupDate: ${label}`);
+    else fail(`computeNextFollowupDate ${label}: expected ${expected}, got ${got}`);
+  }
+
+  // --- analyze-patterns: buying-signal → conversion (run as CLI; the script has
+  // no import.meta.url guard, so it must be exercised as a subprocess) ---
+  const apTmp = mkdtempSync(join(tmpdir(), 'co-patterns-'));
+  const apTracker = join(apTmp, 'prospects.md');
+  writeFileSync(apTracker, [
+    '# Prospects Tracker',
+    '',
+    '| Company | Signal | SignalDate | ICPScore | Status | Contact | Report | Notes |',
+    '|---------|--------|------------|----------|--------|---------|--------|-------|',
+    '| Acme | LLMOps Engineer ×2 | 2026-01-01 | 4.6/5 | Won | — | — | deal |',
+    '| Globex | LLMOps Engineer | 2026-01-05 | 4.3/5 | Opportunity | — | — | open |',
+    '| Initech | Data Platform Lead | 2026-01-06 | 3.2/5 | Lost | — | — | no budget |',
+    '| Umbrella | Data Platform Lead | 2026-01-07 | 3.8/5 | Disqualified | — | — | not a fit |',
+    '| Stark | LLMOps Engineer +1 more | 2026-01-08 | 4.7/5 | Contacted | — | — | chasing |',
+    '',
+  ].join('\n'));
+  let apJson = null;
+  try {
+    const apOut = execFileSync(NODE, [join(ROOT, 'analyze-patterns.mjs')], {
+      cwd: ROOT, env: { ...process.env, CAREER_OPS_TRACKER: apTracker }, encoding: 'utf-8', timeout: 30000,
+    });
+    apJson = JSON.parse(apOut.trim());
+  } catch { /* leave null → fail below */ }
+  if (apJson && apJson.metadata?.byOutcome?.conversion === 2 && apJson.metadata?.byOutcome?.loss === 2) {
+    pass('analyze-patterns classifies Won/Opportunity as conversion and Lost/Disqualified as loss');
+  } else {
+    fail(`analyze-patterns outcome classification wrong: ${JSON.stringify(apJson?.metadata?.byOutcome)}`);
+  }
+  const llmops = apJson?.signalConversion?.find(s => s.signal === 'LLMOps Engineer');
+  if (llmops && llmops.total === 3 && llmops.conversion === 2) {
+    pass('analyze-patterns groups buying signals (×N/+more stripped) and rates conversion');
+  } else {
+    fail(`analyze-patterns signal grouping wrong: ${JSON.stringify(llmops)}`);
+  }
+  rmSync(apTmp, { recursive: true, force: true });
+} catch (e) {
+  fail(`follow-up cadence module crashed: ${e.message}`);
+}
+
+// ── 12. PROVIDERS — Workable ────────────────────────────────────────
+
+console.log('\n12. Provider — workable');
+
+try {
+  const workable = (await import(pathToFileURL(join(ROOT, 'providers/workable.mjs')).href)).default;
+  const { parseWorkableMarkdown } = await import(pathToFileURL(join(ROOT, 'providers/workable.mjs')).href);
+
+  // detect() — auto-detection from careers_url
+  if (workable.id === 'workable') pass('workable.id is "workable"');
+  else fail(`workable.id is ${JSON.stringify(workable.id)}`);
+
+  const hit = workable.detect({ name: 'TestCo', careers_url: 'https://apply.workable.com/optimile' });
+  if (hit && hit.url === 'https://apply.workable.com/optimile/jobs.md') {
+    pass('workable.detect() resolves apply.workable.com/<slug> → /jobs.md feed');
+  } else {
+    fail(`workable.detect() returned ${JSON.stringify(hit)}`);
+  }
+
+  const miss = workable.detect({ name: 'TestCo', careers_url: 'https://example.com/careers' });
+  if (miss === null) pass('workable.detect() returns null for non-workable URLs');
+  else fail(`workable.detect() should return null, got ${JSON.stringify(miss)}`);
+
+  // parse() — markdown table
+  const sampleMd = [
+    '# Optimile — All Open Positions',
+    '',
+    '| Title | Department | Location | Type | Salary | Posted | Details |',
+    '|---|---|---|---|---|---|---|',
+    '| Senior AI PM | Product | Ghent, Belgium | Full-time | — | 2026-04-01 | [View](https://apply.workable.com/optimile/jobs/view/ABC123.md) |',
+    '| Tech Lead | Engineering | Remote | Full-time | — | 2026-03-25 | [View](https://apply.workable.com/optimile/jobs/view/DEF456.md) |',
+  ].join('\n');
+
+  const jobs = parseWorkableMarkdown(sampleMd, 'Optimile');
+  if (jobs.length === 2) pass('parseWorkableMarkdown extracts 2 jobs from 2-row table');
+  else fail(`parseWorkableMarkdown returned ${jobs.length} jobs, expected 2`);
+
+  if (jobs[0]?.title === 'Senior AI PM' && jobs[0]?.location === 'Ghent, Belgium' && jobs[0]?.company === 'Optimile') {
+    pass('parseWorkableMarkdown extracts title, location, company correctly');
+  } else {
+    fail(`parseWorkableMarkdown row 0 = ${JSON.stringify(jobs[0])}`);
+  }
+
+  if (jobs[0]?.url === 'https://apply.workable.com/optimile/jobs/view/ABC123') {
+    pass('parseWorkableMarkdown strips .md suffix from job URL');
+  } else {
+    fail(`parseWorkableMarkdown should strip .md; got url=${JSON.stringify(jobs[0]?.url)}`);
+  }
+
+  // Robustness
+  if (parseWorkableMarkdown('', 'X').length === 0) pass('empty input → empty result');
+  else fail('empty input should yield empty result');
+
+  if (parseWorkableMarkdown(null, 'X').length === 0) pass('null input → empty result (no crash)');
+  else fail('null input should yield empty result without crashing');
+
+  // fetch() reaches the http context on the happy path (allowed hostname).
+  await workable.fetch(
+    { name: 'Smoke', careers_url: 'https://apply.workable.com/optimile' },
+    {
+      transport: 'http',
+      fetchText: async (url) => {
+        if (!url.startsWith('https://apply.workable.com/')) {
+          throw new Error('fetchText called with unexpected URL');
+        }
+        return '| Title | Department | Location | Type | Salary | Posted | Details |\n|---|---|---|---|---|---|---|\n';
+      },
+      fetchJson: async () => { throw new Error('fetchJson should not be called'); },
+    },
+  );
+  pass('workable.fetch() reaches fetchText on the happy path (allowed hostname)');
+
+  // fetch() rejects an unresolvable careers_url (no apply.workable.com match in URL).
+  let rejected = false;
+  try {
+    await workable.fetch(
+      { name: 'BadUrl', careers_url: 'https://evil.com/totally-not-workable' },
+      {
+        transport: 'http',
+        fetchText: async () => { throw new Error('SSRF! should not reach here'); },
+        fetchJson: async () => { throw new Error('SSRF! should not reach here'); },
+      },
+    );
+  } catch (e) {
+    if (e.message.includes('cannot derive feed URL')) {
+      rejected = true;
+    } else {
+      fail(`workable.fetch() rejected with wrong error: ${e.message}`);
+    }
+  }
+  if (rejected) pass('workable.fetch() rejects unresolvable careers_url before fetch');
+  else fail('workable.fetch() should throw cannot-derive-feed-URL for non-Workable URLs');
+
+  // SSRF: malicious URL with apply.workable.com in the PATH (not hostname) must not be detected as Workable.
+  // With strict URL parsing, the hostname `evil.example` fails the check and detect() returns null.
+  if (workable.detect({ name: 'Spoof', careers_url: 'https://evil.example/apply.workable.com/slug' }) === null) {
+    pass('workable.detect() rejects path-spoofed URLs (apply.workable.com in path, not hostname)');
+  } else {
+    fail('workable.detect() must NOT misdetect URLs that contain apply.workable.com in the path');
+  }
+
+  // careers_url with non-string value (e.g. YAML mistake passing a number) → detect() returns null without crashing
+  if (workable.detect({ name: 'X', careers_url: 42 }) === null) {
+    pass('workable.detect() returns null for non-string careers_url (42)');
+  } else {
+    fail('workable.detect() should treat non-string careers_url as missing');
+  }
+
+  // Workable parser tolerates a title with a stray pipe — URL is extracted from the line, not cols[7]
+  const strayPipeMd = [
+    '| Title | Department | Location | Type | Salary | Posted | Details |',
+    '|---|---|---|---|---|---|---|',
+    '| Senior PM (full | part-time) | Product | Remote | Full-time | — | 2026-04-01 | [View](https://apply.workable.com/x/jobs/view/PIPE.md) |',
+  ].join('\n');
+  const strayJobs = parseWorkableMarkdown(strayPipeMd, 'X');
+  if (strayJobs.length === 1 && strayJobs[0].url === 'https://apply.workable.com/x/jobs/view/PIPE') {
+    pass('parseWorkableMarkdown extracts URL from line-level regex (survives stray pipes in title)');
+  } else {
+    fail(`stray-pipe row not handled correctly: ${JSON.stringify(strayJobs)}`);
+  }
+
+  // Off-domain [View] link is dropped (URL validation)
+  const offDomainMd = [
+    '| Title | Department | Location | Type | Salary | Posted | Details |',
+    '|---|---|---|---|---|---|---|',
+    '| Good Role | Product | Remote | Full-time | — | 2026-04-01 | [View](https://apply.workable.com/x/jobs/view/ABC.md) |',
+    '| Evil Role | Product | Remote | Full-time | — | 2026-04-01 | [View](https://evil.example/jobs/view/X) |',
+    '| Insecure Role | Product | Remote | Full-time | — | 2026-04-01 | [View](http://apply.workable.com/x/jobs/view/Y.md) |',
+  ].join('\n');
+  const filteredJobs = parseWorkableMarkdown(offDomainMd, 'X');
+  if (filteredJobs.length === 1 && filteredJobs[0].title === 'Good Role') {
+    pass('parseWorkableMarkdown drops off-domain and non-https [View] links');
+  } else {
+    fail(`expected only "Good Role" through, got ${JSON.stringify(filteredJobs.map(j => j.title))}`);
+  }
+
+} catch (e) {
+  fail(`workable provider tests crashed: ${e.message}`);
+}
+
+// ── 13. PROVIDERS — SmartRecruiters ─────────────────────────────────
+
+console.log('\n13. Provider — smartrecruiters');
+
+try {
+  const sr = (await import(pathToFileURL(join(ROOT, 'providers/smartrecruiters.mjs')).href)).default;
+  const { parseSmartRecruitersResponse } = await import(pathToFileURL(join(ROOT, 'providers/smartrecruiters.mjs')).href);
+
+  if (sr.id === 'smartrecruiters') pass('smartrecruiters.id is "smartrecruiters"');
+  else fail(`smartrecruiters.id is ${JSON.stringify(sr.id)}`);
+
+  const hitCareers = sr.detect({ name: 'Adyen', careers_url: 'https://careers.smartrecruiters.com/adyen' });
+  if (hitCareers && hitCareers.url.startsWith('https://api.smartrecruiters.com/v1/companies/adyen/postings')) {
+    pass('smartrecruiters.detect() resolves careers.smartrecruiters.com/<slug> → api URL');
+  } else {
+    fail(`smartrecruiters.detect(careers) returned ${JSON.stringify(hitCareers)}`);
+  }
+
+  const hitJobs = sr.detect({ name: 'X', careers_url: 'https://jobs.smartrecruiters.com/x' });
+  if (hitJobs && hitJobs.url.startsWith('https://api.smartrecruiters.com/v1/companies/x/postings')) {
+    pass('smartrecruiters.detect() also handles jobs.smartrecruiters.com');
+  } else {
+    fail(`smartrecruiters.detect(jobs) returned ${JSON.stringify(hitJobs)}`);
+  }
+
+  if (sr.detect({ name: 'X', careers_url: 'https://example.com/careers' }) === null) {
+    pass('smartrecruiters.detect() returns null for non-SR URLs');
+  } else {
+    fail('smartrecruiters.detect() should return null for non-SR URLs');
+  }
+
+  // parseSmartRecruitersResponse
+  const sample = {
+    content: [
+      {
+        id: 'abc-123',
+        name: 'Senior PM',
+        ref: 'https://api.smartrecruiters.com/v1/companies/sgs/postings/abc-123',
+        location: { fullLocation: 'Geneva, Switzerland', remote: false },
+      },
+      {
+        id: 'def-456',
+        name: 'Remote AI Engineer',
+        ref: 'https://api.smartrecruiters.com/v1/companies/sgs/postings/def-456',
+        location: { city: 'Paris', country: 'France', remote: true },
+      },
+      {
+        id: 'ghi-789',
+        name: 'No-ref Role',
+        location: { fullLocation: 'Berlin, Germany' },
+      },
+    ],
+  };
+  const jobs = parseSmartRecruitersResponse(sample, 'SGS');
+  if (jobs.length === 3) pass('parseSmartRecruitersResponse extracts 3 jobs');
+  else fail(`parseSmartRecruitersResponse returned ${jobs.length} jobs`);
+
+  if (jobs[0]?.location === 'Geneva, Switzerland' && jobs[0]?.title === 'Senior PM') {
+    pass('parseSmartRecruitersResponse uses fullLocation when present');
+  } else {
+    fail(`row 0 = ${JSON.stringify(jobs[0])}`);
+  }
+
+  if (jobs[1]?.location === 'Paris, France, Remote') {
+    pass('parseSmartRecruitersResponse builds location from city/country/remote when no fullLocation');
+  } else {
+    fail(`row 1 location = ${JSON.stringify(jobs[1]?.location)}, expected "Paris, France, Remote"`);
+  }
+
+  if (jobs[0]?.url === 'https://jobs.smartrecruiters.com/sgs/postings/abc-123') {
+    pass('parseSmartRecruitersResponse rewrites api.smartrecruiters.com → jobs.smartrecruiters.com');
+  } else {
+    fail(`row 0 url = ${JSON.stringify(jobs[0]?.url)}`);
+  }
+
+  if (jobs[2]?.url && jobs[2].url.startsWith('https://jobs.smartrecruiters.com/sgs/ghi-789')) {
+    pass('parseSmartRecruitersResponse falls back to synthetic URL when ref is missing');
+  } else {
+    fail(`row 2 url = ${JSON.stringify(jobs[2]?.url)}`);
+  }
+
+  // Empty input safety
+  if (parseSmartRecruitersResponse({}, 'X').length === 0) pass('empty {} input → empty result');
+  else fail('empty {} input should yield empty result');
+
+  if (parseSmartRecruitersResponse({ content: 'not an array' }, 'X').length === 0) {
+    pass('non-array content → empty result (no crash)');
+  } else {
+    fail('non-array content should yield empty result');
+  }
+
+  // careers_url with non-string value → detect() returns null without crashing
+  if (sr.detect({ name: 'X', careers_url: { foo: 'bar' } }) === null) {
+    pass('smartrecruiters.detect() returns null for non-string careers_url (object)');
+  } else {
+    fail('smartrecruiters.detect() should treat non-string careers_url as missing');
+  }
+
+  // Fallback URL when both ref AND id are missing → empty string (not "undefined" in URL)
+  const noRefNoId = parseSmartRecruitersResponse(
+    { content: [{ name: 'Stranded Role' }] },
+    'X',
+  );
+  if (noRefNoId.length === 1 && noRefNoId[0].url === '') {
+    pass('parseSmartRecruitersResponse returns url="" when both ref and id are missing');
+  } else {
+    fail(`expected url='' when ref+id both missing, got ${JSON.stringify(noRefNoId[0])}`);
+  }
+
+  // SSRF: malicious URL with smartrecruiters hostname in the PATH (not host) must not be detected.
+  if (sr.detect({ name: 'Spoof', careers_url: 'https://evil.example/careers.smartrecruiters.com/slug' }) === null) {
+    pass('smartrecruiters.detect() rejects path-spoofed URLs');
+  } else {
+    fail('smartrecruiters.detect() must NOT misdetect path-spoofed URLs');
+  }
+
+  // SmartRecruiters: untrusted j.ref host falls through to fallback rather than rewriting
+  const bogusRef = parseSmartRecruitersResponse(
+    { content: [{ id: 'X1', name: 'Strange Role', ref: 'https://evil.example/v1/companies/x/postings/X1' }] },
+    'TestCo',
+  );
+  if (bogusRef[0]?.url && !bogusRef[0].url.includes('evil.example')) {
+    pass('parseSmartRecruitersResponse rejects untrusted j.ref host (falls through to fallback)');
+  } else {
+    fail(`untrusted j.ref leaked into url: ${JSON.stringify(bogusRef[0]?.url)}`);
+  }
+
+  // SmartRecruiters: companyName with spaces/symbols is slugified for the fallback URL
+  const slugifiedCompany = parseSmartRecruitersResponse(
+    { content: [{ id: 'X2', name: 'Strange Role' }] },
+    'My Acme & Co.',
+  );
+  if (slugifiedCompany[0]?.url === 'https://jobs.smartrecruiters.com/my-acme-co/X2-strange-role') {
+    pass('parseSmartRecruitersResponse slugifies the companyName for the fallback URL');
+  } else {
+    fail(`fallback URL not properly slugified: ${JSON.stringify(slugifiedCompany[0]?.url)}`);
+  }
+
+  // Pagination: fetch() loops until an empty page (or short page) is returned
+  let pageRequests = 0;
+  const pagedJobs = await sr.fetch(
+    { name: 'PagedCo', careers_url: 'https://careers.smartrecruiters.com/paged' },
+    {
+      transport: 'http',
+      fetchText: async () => { throw new Error('fetchText should not be called'); },
+      fetchJson: async (url) => {
+        pageRequests++;
+        const offset = parseInt(new URL(url).searchParams.get('offset') || '0', 10);
+        if (offset === 0) {
+          // Page 1: full page (100 items)
+          return { content: Array.from({ length: 100 }, (_, i) => ({ id: `P1-${i}`, name: `Role 1-${i}` })) };
+        }
+        if (offset === 100) {
+          // Page 2: short page (50 items) → loop stops after this
+          return { content: Array.from({ length: 50 }, (_, i) => ({ id: `P2-${i}`, name: `Role 2-${i}` })) };
+        }
+        // Should not be reached because page 2 was short
+        return { content: [] };
+      },
+    },
+  );
+  if (pageRequests === 2 && pagedJobs.length === 150) {
+    pass('smartrecruiters.fetch() paginates and aggregates results (2 pages → 150 total)');
+  } else {
+    fail(`pagination: pageRequests=${pageRequests}, total=${pagedJobs.length} (expected 2 requests / 150 results)`);
+  }
+
+  // Pagination stop condition: empty content terminates the loop
+  let emptyPageRequests = 0;
+  const emptyJobs = await sr.fetch(
+    { name: 'EmptyCo', careers_url: 'https://careers.smartrecruiters.com/empty' },
+    {
+      transport: 'http',
+      fetchText: async () => { throw new Error('fetchText should not be called'); },
+      fetchJson: async () => {
+        emptyPageRequests++;
+        return { content: [] };
+      },
+    },
+  );
+  if (emptyPageRequests === 1 && emptyJobs.length === 0) {
+    pass('smartrecruiters.fetch() stops on the first empty page');
+  } else {
+    fail(`empty pagination: requests=${emptyPageRequests}, total=${emptyJobs.length}`);
+  }
+
+} catch (e) {
+  fail(`smartrecruiters provider tests crashed: ${e.message}`);
+}
+
+// ── 14. PROVIDERS — Recruitee ───────────────────────────────────────
+
+console.log('\n14. Provider — recruitee');
+
+try {
+  const recruitee = (await import(pathToFileURL(join(ROOT, 'providers/recruitee.mjs')).href)).default;
+  const { parseRecruiteeResponse } = await import(pathToFileURL(join(ROOT, 'providers/recruitee.mjs')).href);
+
+  if (recruitee.id === 'recruitee') pass('recruitee.id is "recruitee"');
+  else fail(`recruitee.id is ${JSON.stringify(recruitee.id)}`);
+
+  const hit = recruitee.detect({ name: 'Channable', careers_url: 'https://channable.recruitee.com' });
+  if (hit && hit.url === 'https://channable.recruitee.com/api/offers/') {
+    pass('recruitee.detect() resolves <slug>.recruitee.com → api offers');
+  } else {
+    fail(`recruitee.detect() returned ${JSON.stringify(hit)}`);
+  }
+
+  if (recruitee.detect({ name: 'X', careers_url: 'https://example.com/careers' }) === null) {
+    pass('recruitee.detect() returns null for non-recruitee URLs');
+  } else {
+    fail('recruitee.detect() should return null for non-recruitee URLs');
+  }
+
+  // parseRecruiteeResponse
+  const sample = {
+    offers: [
+      { title: 'Senior PM', careers_url: 'https://channable.recruitee.com/o/senior-pm', city: 'Utrecht', country: 'Netherlands', remote: false },
+      { title: 'Backend Eng', url: 'https://channable.recruitee.com/o/backend', city: 'Amsterdam', country: 'Netherlands', remote: true },
+      { title: 'AI Lead', location: 'Remote, EMEA' },
+    ],
+  };
+  const jobs = parseRecruiteeResponse(sample, 'Channable');
+  if (jobs.length === 3) pass('parseRecruiteeResponse extracts 3 offers');
+  else fail(`parseRecruiteeResponse returned ${jobs.length} offers`);
+
+  if (jobs[0]?.title === 'Senior PM' && jobs[0]?.company === 'Channable' && jobs[0]?.url === 'https://channable.recruitee.com/o/senior-pm') {
+    pass('parseRecruiteeResponse prefers careers_url field over url');
+  } else {
+    fail(`row 0 = ${JSON.stringify(jobs[0])}`);
+  }
+
+  if (jobs[1]?.location === 'Amsterdam, Netherlands, Remote') {
+    pass('parseRecruiteeResponse assembles city/country/remote when no location field');
+  } else {
+    fail(`row 1 location = ${JSON.stringify(jobs[1]?.location)}, expected "Amsterdam, Netherlands, Remote"`);
+  }
+
+  if (jobs[2]?.location === 'Remote, EMEA') {
+    pass('parseRecruiteeResponse uses explicit location field when present');
+  } else {
+    fail(`row 2 location = ${JSON.stringify(jobs[2]?.location)}`);
+  }
+
+  if (parseRecruiteeResponse({}, 'X').length === 0) pass('empty {} → empty result');
+  else fail('empty {} should yield empty result');
+
+  if (parseRecruiteeResponse({ offers: null }, 'X').length === 0) {
+    pass('null offers → empty result (no crash)');
+  } else {
+    fail('null offers should yield empty result');
+  }
+
+  // careers_url with non-string value → detect() returns null without crashing
+  if (recruitee.detect({ name: 'X', careers_url: null }) === null && recruitee.detect({ name: 'X', careers_url: 7 }) === null) {
+    pass('recruitee.detect() returns null for non-string careers_url (null and 7)');
+  } else {
+    fail('recruitee.detect() should treat non-string careers_url as missing');
+  }
+
+  // SSRF: malicious URL with recruitee.com in the PATH (not host) must not be detected.
+  if (recruitee.detect({ name: 'Spoof', careers_url: 'https://evil.example/channable.recruitee.com/foo' }) === null) {
+    pass('recruitee.detect() rejects path-spoofed URLs');
+  } else {
+    fail('recruitee.detect() must NOT misdetect path-spoofed URLs');
+  }
+
+  // Off-domain offer URL is dropped (URL validation)
+  const offDomainOffers = parseRecruiteeResponse(
+    {
+      offers: [
+        { title: 'Good', careers_url: 'https://channable.recruitee.com/o/good' },
+        { title: 'Evil', careers_url: 'https://evil.example/o/evil' },
+        { title: 'Insecure', careers_url: 'http://channable.recruitee.com/o/insecure' },
+        { title: 'No URL field' },
+      ],
+    },
+    'Channable',
+  );
+  if (offDomainOffers[0]?.url === 'https://channable.recruitee.com/o/good' && offDomainOffers[1]?.url === '' && offDomainOffers[2]?.url === '' && offDomainOffers[3]?.url === '') {
+    pass('parseRecruiteeResponse drops off-domain, non-https, and missing offer URLs');
+  } else {
+    fail(`URL validation: row0=${JSON.stringify(offDomainOffers[0]?.url)}, row1=${JSON.stringify(offDomainOffers[1]?.url)}, row2=${JSON.stringify(offDomainOffers[2]?.url)}, row3=${JSON.stringify(offDomainOffers[3]?.url)}`);
+  }
+
+} catch (e) {
+  fail(`recruitee provider tests crashed: ${e.message}`);
+}
+
+// ── 12. TRACKER REPORT LINK NORMALIZATION (#760) ────────────────
+
+console.log('\n12. Tracker report-link normalization');
+
+try {
+  const { normalizeReportLink } = await import(pathToFileURL(join(ROOT, 'tracker-links.mjs')).href);
+  const repo = '/repo';
+  const dataDir = join(repo, 'data');
+
+  // data/ layout: root-relative TSV link → ../reports/...
+  const fromTsv = normalizeReportLink('[12](reports/012-acme-2026-01-04.md)', dataDir, repo);
+  if (fromTsv === '[12](../reports/012-acme-2026-01-04.md)') {
+    pass('data/ layout: root-relative link rewritten to ../reports/...');
+  } else {
+    fail(`data/ layout normalization wrong: ${fromTsv}`);
+  }
+
+  // Idempotent: re-running on an already-normalized link must not double-prefix
+  const twice = normalizeReportLink(fromTsv, dataDir, repo);
+  if (twice === fromTsv) {
+    pass('normalization is idempotent (no double-prefix on re-run)');
+  } else {
+    fail(`normalization not idempotent: ${twice}`);
+  }
+
+  // Root layout: tracker at repo root → link stays reports/...
+  const atRoot = normalizeReportLink('[12](reports/012-acme-2026-01-04.md)', repo, repo);
+  if (atRoot === '[12](reports/012-acme-2026-01-04.md)') {
+    pass('root layout: link stays root-relative reports/...');
+  } else {
+    fail(`root layout normalization wrong: ${atRoot}`);
+  }
+
+  // Non-report links are left untouched — including external URLs that happen
+  // to contain an embedded "/reports/" segment (must not be rewritten).
+  const other = normalizeReportLink('[site](https://example.com/reports/foo.md)', dataDir, repo);
+  if (other === '[site](https://example.com/reports/foo.md)') {
+    pass('non-report links (incl. URLs with embedded /reports/) are left untouched');
+  } else {
+    fail(`non-report link altered: ${other}`);
+  }
+
+  // End-to-end migration against a fictional fixture tracker (no personal data)
+  const tmpDir = mkdtempSync(join(tmpdir(), 'sales-signals-migrate-'));
+  try {
+    mkdirSync(join(tmpDir, 'data'));
+    mkdirSync(join(tmpDir, 'reports'));
+    writeFileSync(join(tmpDir, 'reports', '012-acme-2026-01-04.md'), '# fixture\n');
+    const tracker = join(tmpDir, 'data', 'prospects.md');
+    writeFileSync(tracker,
+      '# Prospects Tracker\n\n' +
+      '| Company | Signal | SignalDate | ICPScore | Status | Contact | Report | Notes |\n' +
+      '|---------|--------|------------|----------|--------|---------|--------|-------|\n' +
+      '| Acme | Engineer | 2026-01-04 | 4.2/5 | Qualified | — | [12](reports/012-acme-2026-01-04.md) | ok |\n');
+
+    // Migrate by pointing the script at the fixture tracker via env override.
+    run(NODE, ['merge-tracker.mjs', '--migrate'], { env: { ...process.env, CAREER_OPS_TRACKER: tracker } });
+    const after = readFileSync(tracker, 'utf-8');
+    if (after.includes('[12](../reports/012-acme-2026-01-04.md)')) {
+      pass('migration rewrites fixture tracker links to ../reports/...');
+    } else {
+      fail('migration did not rewrite fixture tracker link');
+    }
+  } finally {
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
+} catch (e) {
+  fail(`tracker-link normalization tests crashed: ${e.message}`);
+}
+
+// ── DEDUP-TRACKER ACCOUNT CONSOLIDATION (Unit 4.3) ──────────────
+// The CRM is one row per account (company), append-only. dedup-tracker.mjs now
+// consolidates same-company multi-row entries into ONE account row: status =
+// MAX rank (never downgraded), score = MAX, Signal/Notes accumulated, newest
+// SignalDate kept. role-matcher.mjs is no longer used for tracker identity but
+// stays available for other role comparisons (smoke-checked below).
+console.log('\n🧪 Testing dedup-tracker account consolidation safety...');
+try {
+  // role-matcher.mjs is untouched and still importable for other uses.
+  const { roleFuzzyMatch } = await import(pathToFileURL(join(ROOT, 'role-matcher.mjs')).href);
+  if (typeof roleFuzzyMatch === 'function' && roleFuzzyMatch('Data Engineer', 'Data Engineer')) {
+    pass('role-matcher.mjs remains available for non-identity role comparisons');
+  } else {
+    fail('role-matcher.mjs no longer importable/usable');
+  }
+
+  const dedupTmp = mkdtempSync(join(tmpdir(), 'sales-signals-dedup-'));
+  try {
+    mkdirSync(join(dedupTmp, 'data'));
+    const tracker = join(dedupTmp, 'data', 'prospects.md');
+    writeFileSync(tracker,
+      '# Prospects Tracker\n\n' +
+      '| Company | Signal | SignalDate | ICPScore | Status | Contact | Report | Notes |\n' +
+      '|---------|--------|------------|----------|--------|---------|--------|-------|\n' +
+      // Acme: a strong Won row plus two later weaker signals → must stay Won.
+      '| Acme | LLMOps Engineer | 2026-01-08 | 4.6/5 | Won | jane@acme | — | closed-won |\n' +
+      '| Acme | Platform Engineer | 2026-02-01 | 4.3/5 | New | — | — | later weak signal |\n' +
+      '| Acme | Data Engineer | 2026-02-10 | 4.1/5 | Qualified | — | — | another weak signal |\n' +
+      // Globex: two rows, the higher status is the SECOND one → Meeting must win.
+      '| Globex | ML Engineer | 2026-01-08 | 3.8/5 | Contacted | bob@globex | — | first |\n' +
+      '| Globex | MLOps Engineer | 2026-01-09 | 4.0/5 | Meeting | — | — | second |\n' +
+      // Initech: a single row must pass through untouched.
+      '| Initech | SRE | 2026-01-08 | 3.5/5 | Qualified | — | — | solo account |\n');
+
+    const dedupResult = run(NODE, ['dedup-tracker.mjs'], { env: { ...process.env, CAREER_OPS_TRACKER: tracker } });
+    if (dedupResult === null) {
+      fail('dedup-tracker.mjs crashed during account consolidation test');
+    } else {
+      const deduped = readFileSync(tracker, 'utf-8');
+      const rowsFor = (co) => deduped.split('\n').filter(l => l.startsWith('|') && l.split('|')[1].trim() === co);
+
+      const acmeRows = rowsFor('Acme');
+      if (acmeRows.length === 1) {
+        pass('dedup-tracker folds 3 Acme rows into ONE account row');
+      } else {
+        fail(`dedup-tracker account consolidation broken: ${acmeRows.length} Acme rows`);
+      }
+      // P0: Won must survive — never downgraded by later weaker signals.
+      if (acmeRows[0] && /\bWon\b/.test(acmeRows[0])) {
+        pass('dedup-tracker NEVER downgrades a Won account (P0 invariant)');
+      } else {
+        fail(`dedup-tracker downgraded a Won account: ${acmeRows[0]}`);
+      }
+      if (acmeRows[0] && acmeRows[0].includes('LLMOps Engineer') &&
+          acmeRows[0].includes('Platform Engineer') && acmeRows[0].includes('Data Engineer')) {
+        pass('dedup-tracker accumulates the full Signal history (no data lost)');
+      } else {
+        fail(`dedup-tracker lost a Signal during consolidation: ${acmeRows[0]}`);
+      }
+
+      const globexRows = rowsFor('Globex');
+      if (globexRows.length === 1 && /\bMeeting\b/.test(globexRows[0])) {
+        pass('dedup-tracker keeps the HIGHEST status even when it is not the first row');
+      } else {
+        fail(`dedup-tracker highest-status handling broken: ${globexRows.length} Globex rows / ${globexRows[0]}`);
+      }
+
+      const initechRows = rowsFor('Initech');
+      if (initechRows.length === 1 && /\bQualified\b/.test(initechRows[0])) {
+        pass('dedup-tracker passes a single-row account through untouched');
+      } else {
+        fail(`dedup-tracker mangled a solo account: ${initechRows.length} Initech rows`);
+      }
+
+      // Verify-pipeline must be clean on the consolidated CRM tracker.
+      const verify = run(NODE, ['verify-pipeline.mjs'], { env: { ...process.env, CAREER_OPS_TRACKER: tracker } });
+      if (verify !== null && /0 errors/.test(verify)) {
+        pass('verify-pipeline clean on the consolidated CRM tracker');
+      } else {
+        fail(`verify-pipeline not clean after consolidation: ${verify}`);
+      }
+    }
+  } finally {
+    rmSync(dedupTmp, { recursive: true, force: true });
+  }
+} catch (e) {
+  fail(`dedup-tracker account consolidation tests crashed: ${e.message}`);
+}
+
+// ── MERGE-TRACKER FUZZY DEDUP (#751 / #721 family) ──────────────
+// roleFuzzyMatch over-matched whenever the token overlap dominated the
+// SMALLER side: two distinct roles sharing a long prefix ("Full-Stack
+// Engineer 5, AI Insights & Visualizations" vs "Full Stack Engineer 5, Ads
+// Reporting") or a brand token (#751: "UberEats Feed" vs "Consumer
+// Fulfillment (UberEats)") collapsed onto one tracker row — silently
+// dropping evaluations. The ratio now divides by the token UNION (true
+// Jaccard): genuine reposts (identical token sets) still score 1.0, while
+// distinct specialties fall below the 0.6 threshold.
+console.log('\n🧪 Testing merge-tracker account merge (append-only, company identity)...');
+try {
+  const mergeTmp = mkdtempSync(join(tmpdir(), 'sales-signals-merge-'));
+  try {
+    mkdirSync(join(mergeTmp, 'data'));
+    mkdirSync(join(mergeTmp, 'reports'));
+    const additionsDir = join(mergeTmp, 'additions');
+    mkdirSync(additionsDir);
+    const tracker = join(mergeTmp, 'data', 'prospects.md');
+    writeFileSync(tracker,
+      '# Prospects Tracker\n\n' +
+      '| Company | Signal | SignalDate | ICPScore | Status | Contact | Report | Notes |\n' +
+      '|---------|--------|------------|----------|--------|---------|--------|-------|\n' +
+      '| StreamCo | Full Stack Engineer | 2026-01-04 | 4.4/5 | Qualified | — | [1](../reports/001-streamco.md) | existing |\n' +
+      '| Uber | Senior Software Engineer | 2026-01-04 | 4.2/5 | Won | jane@uber | [2](../reports/002-uber.md) | existing customer |\n');
+    for (const n of ['001-streamco', '002-uber', '003-streamco', '004-uber', '005-globex']) {
+      writeFileSync(join(mergeTmp, 'reports', `${n}.md`), '# fixture\n');
+    }
+    // Account TSV order: company\tsignal\tsignaldate\ticpscore\tstatus\tcontact\treport\tnotes
+    // (a) StreamCo: a STRONGER signal for the same account → folds in, upgrades.
+    writeFileSync(join(additionsDir, '003-streamco.tsv'),
+      'StreamCo\tAI Insights Engineer\t2026-01-05\t4.6/5\tContacted\t—\t[3](reports/003-streamco.md)\tsecond signal\n');
+    // (b) Uber: a WEAKER signal for the Won account → folds in, NEVER downgrades.
+    writeFileSync(join(additionsDir, '004-uber.tsv'),
+      'Uber\tUberEats Feed Engineer\t2026-01-05\t4.1/5\tNew\t—\t[4](reports/004-uber.md)\tlater weak signal\n');
+    // (c) Globex: a brand new company → new row.
+    writeFileSync(join(additionsDir, '005-globex.tsv'),
+      'Globex\tData Engineer\t2026-01-06\t3.9/5\tQualified\tbob@globex\t[5](reports/005-globex.md)\tnew account\n');
+
+    const mergeResult = run(NODE, ['merge-tracker.mjs'], { env: { ...process.env, CAREER_OPS_TRACKER: tracker, CAREER_OPS_ADDITIONS: additionsDir } });
+    if (mergeResult === null) {
+      fail('merge-tracker.mjs crashed during account merge test');
+    } else {
+      const merged = readFileSync(tracker, 'utf-8');
+      const rowsFor = (co) => merged.split('\n').filter(l => l.startsWith('|') && l.split('|')[1].trim() === co);
+
+      // (a) StreamCo: one row, status upgraded, both signals retained.
+      const streamRows = rowsFor('StreamCo');
+      if (streamRows.length === 1 && /\bContacted\b/.test(streamRows[0]) &&
+          streamRows[0].includes('Full Stack Engineer') && streamRows[0].includes('AI Insights Engineer')) {
+        pass('second signal folds into the existing account row and upgrades status (no duplicate)');
+      } else {
+        fail(`account merge broken: ${streamRows.length} StreamCo rows / ${streamRows[0]}`);
+      }
+
+      // (b) Uber: one row, Won preserved (P0), weaker signal recorded.
+      const uberRows = rowsFor('Uber');
+      if (uberRows.length === 1 && /\bWon\b/.test(uberRows[0]) && uberRows[0].includes('UberEats Feed Engineer')) {
+        pass('P0: merge NEVER downgrades a Won account by a later weaker signal');
+      } else {
+        fail(`P0 VIOLATION in merge: ${uberRows.length} Uber rows / ${uberRows[0]}`);
+      }
+
+      // (c) Globex: a brand-new company adds a new row.
+      const globexRows = rowsFor('Globex');
+      if (globexRows.length === 1 && /\bQualified\b/.test(globexRows[0])) {
+        pass('a brand-new company is added as a new account row');
+      } else {
+        fail(`new-company handling broken: ${globexRows.length} Globex rows`);
+      }
+    }
+  } finally {
+    rmSync(mergeTmp, { recursive: true, force: true });
+  }
+} catch (e) {
+  fail(`merge-tracker account merge tests crashed: ${e.message}`);
+}
+
+// ── MERGE-TRACKER CONCURRENT WRITES (#781 follow-up) ─────────────────────
+// Report-number reservation is atomic now (#803), but tracker merges are a
+// separate read/modify/write step. If two merge-tracker processes read the same
+// old applications.md snapshot and then write back independently, one process
+// can erase the row added by the other. This fixture gives each process a
+// different additions dir and pauses the first process after it has read the
+// tracker, making the old race deterministic.
+console.log('\n🧪 Testing merge-tracker concurrent writes...');
+try {
+  const mergeTmp = mkdtempSync(join(tmpdir(), 'sales-signals-merge-lock-'));
+  /**
+   * Spawn one isolated `merge-tracker.mjs` process against the temporary fixture.
+   *
+   * Each spawned process receives the same tracker path and lock path but a
+   * different additions directory. Without serialization, both processes can
+   * read the same old tracker and the later write can lose the other row. The
+   * first worker also sends an IPC readiness message after reading the tracker
+   * and before its test hold, which lets the test launch the second worker at
+   * the exact old race point instead of relying on scheduler timing.
+   *
+   * @param {string} additionsDir - Directory containing this process's TSV row.
+   * @param {number} [holdMs=0] - Optional post-read delay injected into the merge.
+   * @returns {{ready: Promise<void>, result: Promise<{code:number|null,stdout:string,stderr:string}>}}
+   * Worker readiness and final process result promises.
+   */
+  function spawnMerge(additionsDir, holdMs = 0) {
+    let markReady;
+    let readyMarked = false;
+    const ready = new Promise(resolve => { markReady = resolve; });
+    const result = new Promise(resolve => {
+      const child = spawn(NODE, ['merge-tracker.mjs'], {
+        cwd: ROOT,
+        env: {
+          ...process.env,
+          CAREER_OPS_TRACKER: join(mergeTmp, 'data', 'applications.md'),
+          CAREER_OPS_ADDITIONS: additionsDir,
+          CAREER_OPS_TRACKER_LOCK: join(mergeTmp, 'sales-signals-merge-tracker-fixture.lock'),
+          CAREER_OPS_MERGE_HOLD_MS: String(holdMs),
+          CAREER_OPS_MERGE_READY_IPC: '1',
+        },
+        stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+      });
+      let stdout = '';
+      let stderr = '';
+      const resolveReady = () => {
+        if (readyMarked) return;
+        readyMarked = true;
+        markReady();
+      };
+      child.stdout.on('data', chunk => { stdout += chunk; });
+      child.stderr.on('data', chunk => { stderr += chunk; });
+      child.on('message', msg => {
+        if (msg?.type === 'merge-tracker-ready') resolveReady();
+      });
+      child.on('error', err => {
+        resolveReady();
+        resolve({ code: -1, stdout, stderr: String(err) });
+      });
+      child.on('close', code => {
+        resolveReady();
+        resolve({ code, stdout, stderr });
+      });
+    });
+    return { ready, result };
+  }
+
+  /**
+   * Fail fast when a worker never reaches the deterministic race checkpoint.
+   *
+   * A missing readiness signal would otherwise hang the test suite. Timing out
+   * turns that broken test contract into a normal assertion failure with a clear
+   * message.
+   *
+   * @param {Promise<void>} ready - Worker readiness promise.
+   * @param {number} timeoutMs - Maximum milliseconds to wait.
+   * @returns {Promise<void>} Resolves when ready arrives before the timeout.
+   */
+  function waitForReady(ready, timeoutMs) {
+    return Promise.race([
+      ready,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('merge worker did not signal readiness')), timeoutMs)),
+    ]);
+  }
+
+  try {
+    mkdirSync(join(mergeTmp, 'data'));
+    mkdirSync(join(mergeTmp, 'reports'));
+    const additionsA = join(mergeTmp, 'additions-a');
+    const additionsB = join(mergeTmp, 'additions-b');
+    mkdirSync(additionsA);
+    mkdirSync(additionsB);
+
+    writeFileSync(join(mergeTmp, 'data', 'applications.md'),
+      '# Prospects Tracker\n\n' +
+      '| Company | Signal | SignalDate | ICPScore | Status | Contact | Report | Notes |\n' +
+      '|---------|--------|------------|----------|--------|---------|--------|-------|\n');
+    writeFileSync(join(mergeTmp, 'reports', '010-alpha-2026-01-07.md'), '# fixture\n');
+    writeFileSync(join(mergeTmp, 'reports', '011-beta-2026-01-07.md'), '# fixture\n');
+    // Account TSV order: company\tsignal\tsignaldate\ticpscore\tstatus\tcontact\treport\tnotes
+    writeFileSync(join(additionsA, '010-alpha.tsv'),
+      'Alpha\tPlatform Engineer\t2026-01-07\t4.1/5\tQualified\t—\t[10](reports/010-alpha-2026-01-07.md)\tfirst concurrent merge\n');
+    writeFileSync(join(additionsB, '011-beta.tsv'),
+      'Beta\tData Engineer\t2026-01-07\t4.2/5\tQualified\t—\t[11](reports/011-beta-2026-01-07.md)\tsecond concurrent merge\n');
+
+    const first = spawnMerge(additionsA, 350);
+    await waitForReady(first.ready, 2_000);
+    const second = spawnMerge(additionsB, 0);
+    const [firstResult, secondResult] = await Promise.all([first.result, second.result]);
+
+    if (firstResult.code === 0 && secondResult.code === 0) {
+      pass('concurrent merge processes both exited successfully');
+    } else {
+      fail(`concurrent merge process failed: first=${firstResult.code} second=${secondResult.code} stderr=${firstResult.stderr || secondResult.stderr}`);
+    }
+
+    const merged = readFileSync(join(mergeTmp, 'data', 'applications.md'), 'utf-8');
+    if (merged.includes('Alpha') && merged.includes('Beta')) {
+      pass('concurrent tracker merges preserve rows from both processes');
+    } else {
+      fail(`concurrent tracker merge lost a row: ${merged}`);
+    }
+  } finally {
+    rmSync(mergeTmp, { recursive: true, force: true });
+  }
+} catch (e) {
+  fail(`merge-tracker concurrent write test crashed: ${e.message}`);
+}
+
+// ── 12. COLD-START TRIGGER ──────────────────────────────────────
+
+console.log('\n12. Cold-start trigger (deterministic onboarding state)');
+
+try {
+  // Virgin env: none of the 3 sales prerequisites present → must onboard.
+  const virgin = mkdtempSync(join(tmpdir(), 'co-cold-'));
+  const v = JSON.parse(run(NODE, ['doctor.mjs', '--json', '--target', virgin]) || '{}');
+  if (
+    v.onboardingNeeded === true &&
+    Array.isArray(v.missing) &&
+    v.missing.length === 3 &&
+    Array.isArray(v.warnings)
+  ) {
+    pass('Virgin env → onboarding triggered (3 sales prerequisites missing)');
+  } else {
+    fail(`Virgin env not flagged for onboarding: ${JSON.stringify(v)}`);
+  }
+  rmSync(virgin, { recursive: true, force: true });
+
+  // Fully provisioned env: all 3 present → must NOT onboard. Sales onboarding =
+  // vendor identity + the active ICP's signals.yml + icp.md (flat layout).
+  const ready = mkdtempSync(join(tmpdir(), 'co-ready-'));
+  mkdirSync(join(ready, 'icps', 'default'), { recursive: true });
+  mkdirSync(join(ready, 'config'), { recursive: true });
+  for (const f of [
+    'config/vendor.yml',
+    'icps/default/signals.yml',
+    'icps/default/icp.md',
+  ]) {
+    writeFileSync(join(ready, ...f.split('/')), 'x');
+  }
+  const r = JSON.parse(run(NODE, ['doctor.mjs', '--json', '--target', ready]) || '{}');
+  if (r.onboardingNeeded === false && Array.isArray(r.warnings)) {
+    pass('Provisioned env → no onboarding');
+  } else {
+    fail(`Provisioned env falsely flagged for onboarding: ${JSON.stringify(r)}`);
+  }
+  rmSync(ready, { recursive: true, force: true });
+
+  const claudeDoc = readFile('CLAUDE.md');
+  if (
+    /node\s+doctor\.mjs\s+--json/.test(claudeDoc) &&
+    /"warnings"\s*:\s*\[\.\.\.\]/.test(claudeDoc) &&
+    !/Does\s+`cv\.md`\s+exist\?/i.test(claudeDoc)
+  ) {
+    pass('CLAUDE.md delegates onboarding state to doctor --json');
+  } else {
+    fail('CLAUDE.md still duplicates onboarding prerequisite checks');
+  }
+} catch (e) {
+  fail(`Cold-start trigger test crashed: ${e.message}`);
+}
+
+// ── 15. TRACKER DERIVED INDEX (#918 phase 1) ────────────────────
+// applications.md is the source of truth; applications.db is a derived index
+// rebuilt from it. Round-trip md → db → md must be lossless for clean input
+// (a hard condition from #918 before any phase-2 work), sync must DETECT
+// corruption without ever modifying the markdown, and reads must never be
+// stale.
+
+console.log('\n15. Tracker derived index (sync/query/export round-trip)');
+
+const sqliteAvailable = run(NODE, ['--no-warnings', '-e', "import('node:sqlite').then(()=>process.exit(0),()=>process.exit(1))"]) !== null;
+if (!sqliteAvailable) {
+  warn('node:sqlite unavailable (Node < 22.5) — tracker index tests skipped');
+} else {
+  try {
+    const idxTmp = mkdtempSync(join(tmpdir(), 'sales-signals-index-'));
+    try {
+      const md = join(idxTmp, 'applications.md');
+      const env = { ...process.env, CAREER_OPS_TRACKER: md };
+      const trackerRun = (args) => run(NODE, ['tracker.mjs', ...args], { env, stdio: ['pipe', 'pipe', 'pipe'] });
+
+      // 1. Round trip: clean canonical CRM input must export byte-identical.
+      const clean =
+        '# Applications Tracker\n\n' +
+        '| Company | Signal | SignalDate | ICPScore | Status | Contact | Report | Notes |\n' +
+        '|---------|--------|------------|----------|--------|---------|--------|-------|\n' +
+        '| Beta | Designer | 2026-01-05 | 4.0/5 | Contacted | jane@beta | [2](../reports/002-beta-2026-01-05.md) | second |\n' +
+        '| Acme | Engineer | 2026-01-04 | 4.2/5 | Qualified | — | [1](../reports/001-acme-2026-01-04.md) | first |\n';
+      writeFileSync(md, clean);
+      if (trackerRun(['sync']) === null) {
+        fail('tracker sync crashed on clean fixture');
+      } else {
+        const exported = trackerRun(['export']);
+        if (exported === clean.trim()) {
+          pass('round trip md → db → md is lossless on clean input');
+        } else {
+          fail('round trip is NOT lossless on clean input');
+        }
+        if (readFileSync(md, 'utf-8') === clean) {
+          pass('sync/export never modify the source markdown');
+        } else {
+          fail('sync/export modified the tracker (source of truth violated)');
+        }
+      }
+
+      // 2. Corruption is detected and normalized in the index ONLY
+      // (non-canonical status + score sitting in the status column + mojibake).
+      const corrupted = clean +
+        '| Gamma | PM | 2026-01-06 | — | 3.5/5 | jane@gamma | 鈥? | drifted |\n';
+      writeFileSync(md, corrupted);
+      if (trackerRun(['sync', '--check']) === null) {
+        pass('sync --check exits non-zero when corruption is present');
+      } else {
+        fail('sync --check did not flag corrupted fixture');
+      }
+      const queried = JSON.parse(trackerRun(['query', '--company', 'Gamma', '--json']) || '[]');
+      if (queried.length === 1 && queried[0].status === 'New' && queried[0].icp_score === '3.5/5') {
+        pass('corrupted row is normalized in the index (status/score repaired)');
+      } else {
+        fail(`corrupted row not normalized in index: ${JSON.stringify(queried)}`);
+      }
+      if (readFileSync(md, 'utf-8') === corrupted) {
+        pass('corruption repair never touches the markdown itself');
+      } else {
+        fail('sync modified the corrupted markdown (must only diagnose)');
+      }
+
+      // 3. Staleness: query after an md edit must auto-resync (no stale reads).
+      writeFileSync(md, clean +
+        '| Delta | Analyst | 2026-01-07 | 4.5/5 | Meeting | — | [3](../reports/003-delta-2026-01-07.md) | new |\n');
+      const fresh = JSON.parse(trackerRun(['query', '--company', 'Delta', '--json']) || '[]');
+      if (fresh.length === 1) {
+        pass('query auto-resyncs when the tracker changed since last sync');
+      } else {
+        fail('query served a stale index after the markdown changed');
+      }
+
+      // 4. Status transitions across syncs accumulate in status_events.
+      // Beta is the first data row → index id 1.
+      writeFileSync(md, readFileSync(md, 'utf-8').replace('| 4.0/5 | Contacted |', '| 4.0/5 | Meeting |'));
+      const log = trackerRun(['history', '--id', '1']);
+      if (log && log.includes('Contacted') && log.includes('Meeting')) {
+        pass('history records the Contacted → Meeting transition across syncs');
+      } else {
+        fail(`history missing status transition: ${log}`);
+      }
+    } finally {
+      rmSync(idxTmp, { recursive: true, force: true });
+    }
+  } catch (e) {
+    fail(`tracker derived-index tests crashed: ${e.message}`);
+  }
+}
+
+// ── 12b. PLAYWRIGHT MCP DETECTION WARNING (#522) ────────────────
+
+console.log('\n12b. Playwright MCP detection warning');
+
+try {
+  // No project MCP config → doctor surfaces a (non-fatal) warning instead of
+  // letting SPA job boards fail silently.
+  const noMcp = mkdtempSync(join(tmpdir(), 'co-nomcp-'));
+  const a = JSON.parse(run(NODE, ['doctor.mjs', '--json', '--target', noMcp]) || '{}');
+  if (Array.isArray(a.warnings) && a.warnings.some((w) => /playwright mcp/i.test(w))) {
+    pass('No Playwright MCP config → warning surfaced');
+  } else {
+    fail(`Expected a Playwright MCP warning, got: ${JSON.stringify(a.warnings)}`);
+  }
+  rmSync(noMcp, { recursive: true, force: true });
+
+  // A project that registers a Playwright MCP server → no warning.
+  const withMcp = mkdtempSync(join(tmpdir(), 'co-mcp-'));
+  mkdirSync(join(withMcp, '.claude'), { recursive: true });
+  writeFileSync(
+    join(withMcp, '.claude', 'settings.json'),
+    JSON.stringify({ mcpServers: { playwright: { command: 'npx', args: ['@playwright/mcp', '--headless'] } } }),
+  );
+  const b = JSON.parse(run(NODE, ['doctor.mjs', '--json', '--target', withMcp]) || '{}');
+  if (Array.isArray(b.warnings) && !b.warnings.some((w) => /playwright mcp/i.test(w))) {
+    pass('Playwright MCP configured → no warning');
+  } else {
+    fail(`Did not expect a Playwright MCP warning, got: ${JSON.stringify(b.warnings)}`);
+  }
+  rmSync(withMcp, { recursive: true, force: true });
+} catch (e) {
+  fail(`Playwright MCP detection test crashed: ${e.message}`);
+}
+
+// ── 15. PROVIDERS — SolidJobs ─────────────────────────────────────
+
+console.log('\n15. Provider — solidjobs');
+
+try {
+  const sj = (await import(pathToFileURL(join(ROOT, 'providers/solidjobs.mjs')).href)).default;
+
+  if (sj.id === 'solidjobs') pass('solidjobs.id is "solidjobs"');
+  else fail(`solidjobs.id is ${JSON.stringify(sj.id)}`);
+
+  // detect() matches valid SolidJobs API URL
+  const hit = sj.detect({ name: 'SJ', careers_url: 'https://solid.jobs/public-api/offers/it?campaign=sales-signals' });
+  if (hit && hit.url) pass('solidjobs.detect() matches valid API URL');
+  else fail('solidjobs.detect() should match solid.jobs public-api URL');
+
+  // detect() rejects non-SolidJobs URL
+  if (sj.detect({ name: 'X', careers_url: 'https://example.com/jobs' }) === null) {
+    pass('solidjobs.detect() rejects non-SolidJobs URL');
+  } else {
+    fail('solidjobs.detect() must reject non-SolidJobs URLs');
+  }
+
+  // detect() rejects path-spoofed URL (solid.jobs in path, not hostname)
+  if (sj.detect({ name: 'X', careers_url: 'https://evil.example/solid.jobs/public-api/offers/it' }) === null) {
+    pass('solidjobs.detect() rejects path-spoofed URLs');
+  } else {
+    fail('solidjobs.detect() must NOT misdetect URLs with solid.jobs in the path');
+  }
+
+  // detect() returns null for non-string careers_url
+  if (sj.detect({ name: 'X', careers_url: 42 }) === null) {
+    pass('solidjobs.detect() returns null for non-string careers_url (42)');
+  } else {
+    fail('solidjobs.detect() should treat non-string careers_url as missing');
+  }
+
+  // detect() returns null for missing careers_url
+  if (sj.detect({ name: 'X' }) === null) {
+    pass('solidjobs.detect() returns null for missing careers_url');
+  } else {
+    fail('solidjobs.detect() should return null when careers_url is missing');
+  }
+
+  // fetch() parses { jobs: [...] } response with company from API
+  const fakeJobs = {
+    jobs: [
+      { title: 'Senior Dev', url: 'https://solid.jobs/o/abc123/sales-signals', company: 'Acme Corp', locations: ['Warszawa', 'Remote'] },
+      { title: 'Junior Dev', url: 'https://solid.jobs/o/def456/sales-signals', company: 'Beta Inc', locations: ['Kraków'] },
+    ],
+  };
+  const parsed = await sj.fetch(
+    { name: 'SolidJobs IT', careers_url: 'https://solid.jobs/public-api/offers/it?campaign=sales-signals' },
+    { transport: 'http', fetchJson: async () => fakeJobs, fetchText: async () => '' },
+  );
+  if (parsed.length === 2) pass('solidjobs.fetch() returns 2 jobs from mock response');
+  else fail(`solidjobs.fetch() returned ${parsed.length} jobs, expected 2`);
+
+  if (parsed[0].company === 'Acme Corp') pass('solidjobs.fetch() uses j.company from API response');
+  else fail(`solidjobs.fetch() company is ${JSON.stringify(parsed[0].company)}, expected "Acme Corp"`);
+
+  if (parsed[0].location === 'Warszawa, Remote') pass('solidjobs.fetch() joins locations array');
+  else fail(`solidjobs.fetch() location is ${JSON.stringify(parsed[0].location)}, expected "Warszawa, Remote"`);
+
+  if (parsed[0].title === 'Senior Dev' && parsed[0].url === 'https://solid.jobs/o/abc123/sales-signals') {
+    pass('solidjobs.fetch() maps title and url correctly');
+  } else {
+    fail(`solidjobs.fetch() title/url wrong: ${JSON.stringify(parsed[0])}`);
+  }
+
+  // fetch() falls back to entry.name when j.company is missing
+  const noCompanyJobs = { jobs: [{ title: 'Tester', url: 'https://solid.jobs/o/xyz/sales-signals', locations: [] }] };
+  const fallback = await sj.fetch(
+    { name: 'SolidJobs IT', careers_url: 'https://solid.jobs/public-api/offers/it?campaign=sales-signals' },
+    { transport: 'http', fetchJson: async () => noCompanyJobs, fetchText: async () => '' },
+  );
+  if (fallback[0].company === 'SolidJobs IT') pass('solidjobs.fetch() falls back to entry.name when j.company missing');
+  else fail(`solidjobs.fetch() fallback company is ${JSON.stringify(fallback[0].company)}`);
+
+  // fetch() handles empty locations array
+  if (fallback[0].location === '') pass('solidjobs.fetch() returns empty string for empty locations array');
+  else fail(`solidjobs.fetch() location for empty array is ${JSON.stringify(fallback[0].location)}`);
+
+  // fetch() rejects non-SolidJobs hostname (SSRF)
+  let ssrfRejected = false;
+  try {
+    await sj.fetch(
+      { name: 'Evil', careers_url: 'https://evil.com/public-api/offers/it' },
+      { transport: 'http', fetchJson: async () => { throw new Error('SSRF! should not reach here'); }, fetchText: async () => '' },
+    );
+  } catch (e) {
+    if (e.message.includes('untrusted hostname')) ssrfRejected = true;
+    else fail(`solidjobs.fetch() rejected with wrong error: ${e.message}`);
+  }
+  if (ssrfRejected) pass('solidjobs.fetch() rejects untrusted hostname (SSRF protection)');
+  else fail('solidjobs.fetch() should reject non-solid.jobs hostnames');
+
+  // fetch() throws on missing careers_url
+  let missingUrl = false;
+  try {
+    await sj.fetch(
+      { name: 'No URL' },
+      { transport: 'http', fetchJson: async () => ({}), fetchText: async () => '' },
+    );
+  } catch (e) {
+    if (e.message.includes('careers_url required')) missingUrl = true;
+    else fail(`solidjobs.fetch() missing URL error: ${e.message}`);
+  }
+  if (missingUrl) pass('solidjobs.fetch() throws on missing careers_url');
+  else fail('solidjobs.fetch() should throw when careers_url is missing');
+
+  // fetch() rejects HTTP (non-HTTPS) URL
+  let httpRejected = false;
+  try {
+    await sj.fetch(
+      { name: 'HTTP', careers_url: 'http://solid.jobs/public-api/offers/it' },
+      { transport: 'http', fetchJson: async () => { throw new Error('should not reach here'); }, fetchText: async () => '' },
+    );
+  } catch (e) {
+    if (e.message.includes('HTTPS')) httpRejected = true;
+    else fail(`solidjobs.fetch() HTTP rejection wrong error: ${e.message}`);
+  }
+  if (httpRejected) pass('solidjobs.fetch() rejects HTTP URLs (HTTPS enforcement)');
+  else fail('solidjobs.fetch() should reject non-HTTPS URLs');
+
+  // fetch() rejects malformed/unparseable URL
+  let malformedRejected = false;
+  try {
+    await sj.fetch(
+      { name: 'Bad', careers_url: 'not-a-url' },
+      { transport: 'http', fetchJson: async () => { throw new Error('should not reach here'); }, fetchText: async () => '' },
+    );
+  } catch (e) {
+    if (e.message.includes('invalid URL')) malformedRejected = true;
+    else fail(`solidjobs.fetch() malformed URL wrong error: ${e.message}`);
+  }
+  if (malformedRejected) pass('solidjobs.fetch() rejects malformed URLs');
+  else fail('solidjobs.fetch() should reject unparseable URLs');
+
+  // fetch() throws on unexpected API response (no jobs array)
+  const badResponses = [
+    [{}, 'empty object'],
+    [{ jobs: null }, 'jobs: null'],
+    [{ jobs: 'not-array' }, 'jobs: string'],
+    [{ offers: [] }, 'wrong key name'],
+    [null, 'null response'],
+  ];
+  for (const [resp, label] of badResponses) {
+    let threw = false;
+    try {
+      await sj.fetch(
+        { name: 'SolidJobs IT', careers_url: 'https://solid.jobs/public-api/offers/it?campaign=sales-signals' },
+        { transport: 'http', fetchJson: async () => resp, fetchText: async () => '' },
+      );
+    } catch (e) {
+      if (e.message.includes('unexpected API response')) threw = true;
+      else fail(`solidjobs.fetch() bad response (${label}) wrong error: ${e.message}`);
+    }
+    if (threw) pass(`solidjobs.fetch() throws on bad API response (${label})`);
+    else fail(`solidjobs.fetch() should throw on bad API response (${label})`);
+  }
+
+  // fetch() filters out jobs with empty/missing url
+  const mixedJobs = {
+    jobs: [
+      { title: 'Has URL', url: 'https://solid.jobs/o/1/sales-signals', company: 'A', locations: [] },
+      { title: 'No URL', url: '', company: 'B', locations: [] },
+      { title: 'Missing URL', company: 'C', locations: [] },
+    ],
+  };
+  const filtered = await sj.fetch(
+    { name: 'SolidJobs IT', careers_url: 'https://solid.jobs/public-api/offers/it?campaign=sales-signals' },
+    { transport: 'http', fetchJson: async () => mixedJobs, fetchText: async () => '' },
+  );
+  if (filtered.length === 1 && filtered[0].title === 'Has URL') pass('solidjobs.fetch() filters out jobs with empty/missing url');
+  else fail(`solidjobs.fetch() should filter empty URLs, got ${filtered.length} jobs: ${JSON.stringify(filtered)}`);
+
+  // fetch() handles string locations (non-array)
+  const stringLocJobs = { jobs: [{ title: 'Dev', url: 'https://solid.jobs/o/2/sales-signals', company: 'X', locations: 'Warsaw' }] };
+  const strLoc = await sj.fetch(
+    { name: 'SolidJobs IT', careers_url: 'https://solid.jobs/public-api/offers/it?campaign=sales-signals' },
+    { transport: 'http', fetchJson: async () => stringLocJobs, fetchText: async () => '' },
+  );
+  if (strLoc[0].location === 'Warsaw') pass('solidjobs.fetch() handles string locations');
+  else fail(`solidjobs.fetch() string location is ${JSON.stringify(strLoc[0].location)}, expected "Warsaw"`);
+
+  // detect() returns null for valid hostname but wrong path
+  if (sj.detect({ name: 'X', careers_url: 'https://solid.jobs/careers' }) === null) {
+    pass('solidjobs.detect() rejects solid.jobs URL with wrong path');
+  } else {
+    fail('solidjobs.detect() should reject solid.jobs URLs not under /public-api/offers/');
+  }
+
+  // fetch() passes redirect:'error' to fetchJson
+  let capturedOpts = null;
+  await sj.fetch(
+    { name: 'SolidJobs IT', careers_url: 'https://solid.jobs/public-api/offers/it?campaign=sales-signals' },
+    { transport: 'http', fetchJson: async (_url, opts) => { capturedOpts = opts; return { jobs: [] }; }, fetchText: async () => '' },
+  );
+  if (capturedOpts && capturedOpts.redirect === 'error') pass('solidjobs.fetch() passes redirect:"error" to fetchJson');
+  else fail(`solidjobs.fetch() should pass redirect:"error", got: ${JSON.stringify(capturedOpts)}`);
+
+  // fetch() tolerates malformed array members without crashing
+  const malformedMembers = { jobs: [null, 7, { title: 'OK', url: 'https://solid.jobs/o/3/sales-signals', company: 'Z' }] };
+  const safeParsed = await sj.fetch(
+    { name: 'SolidJobs IT', careers_url: 'https://solid.jobs/public-api/offers/it?campaign=sales-signals' },
+    { transport: 'http', fetchJson: async () => malformedMembers, fetchText: async () => '' },
+  );
+  if (safeParsed.length === 1 && safeParsed[0].url === 'https://solid.jobs/o/3/sales-signals') {
+    pass('solidjobs.fetch() skips malformed jobs members without crashing');
+  } else {
+    fail(`solidjobs.fetch() malformed members handling failed: ${JSON.stringify(safeParsed)}`);
+  }
+} catch (e) {
+  fail(`solidjobs provider tests crashed: ${e.message}`);
+}
+
+// ── 15. URL REDISCOVERY FALLBACK (--rediscover-404) ─────────────
+
+console.log('\n15. URL rediscovery fallback');
+
+try {
+  const { extractCareersUrlDomain, pickRediscoveredUrl } = await import(
+    pathToFileURL(join(ROOT, 'scan.mjs')).href
+  );
+
+  // extractCareersUrlDomain — pure hostname extraction, null on missing/invalid
+  if (extractCareersUrlDomain('https://job-boards.greenhouse.io/anthropic') === 'job-boards.greenhouse.io') {
+    pass('extractCareersUrlDomain pulls hostname from a careers URL');
+  } else {
+    fail('extractCareersUrlDomain failed on a valid URL');
+  }
+  if (extractCareersUrlDomain(null) === null) {
+    pass('extractCareersUrlDomain returns null for missing careers_url');
+  } else {
+    fail('extractCareersUrlDomain did not return null for null input');
+  }
+  if (extractCareersUrlDomain('not-a-url') === null) {
+    pass('extractCareersUrlDomain returns null for an unparseable URL');
+  } else {
+    fail('extractCareersUrlDomain did not return null for a bad URL');
+  }
+
+  // pickRediscoveredUrl — first search hit whose hostname exactly matches domain
+  const domain = 'job-boards.greenhouse.io';
+  const hrefs = [
+    'https://duckduckgo.com/l/?uddg=ad',          // search-engine chrome / noise
+    'https://other-board.lever.co/acme/123',      // wrong domain
+    'https://job-boards.greenhouse.io/acme/456',  // first real match
+    'https://job-boards.greenhouse.io/acme/789',  // later match
+  ];
+  if (pickRediscoveredUrl(hrefs, domain) === 'https://job-boards.greenhouse.io/acme/456') {
+    pass('pickRediscoveredUrl returns the first same-domain result');
+  } else {
+    fail(`pickRediscoveredUrl picked the wrong URL: ${pickRediscoveredUrl(hrefs, domain)}`);
+  }
+  if (pickRediscoveredUrl(['https://elsewhere.com/x'], domain) === null) {
+    pass('pickRediscoveredUrl returns null when no result matches the domain');
+  } else {
+    fail('pickRediscoveredUrl did not return null for no domain match');
+  }
+  if (pickRediscoveredUrl([], domain) === null) {
+    pass('pickRediscoveredUrl returns null for an empty result set');
+  } else {
+    fail('pickRediscoveredUrl did not return null for empty input');
+  }
+  // Redirect unwrapping is restricted to real DuckDuckGo hosts: a look-alike
+  // host must not get its uddg target unwrapped (and its own hostname does not
+  // match the careers domain, so the result is null).
+  const lookAlike = `https://evil-duckduckgo.com/l/?uddg=${encodeURIComponent('https://job-boards.greenhouse.io/acme/456')}`;
+  if (pickRediscoveredUrl([lookAlike], domain) === null) {
+    pass('pickRediscoveredUrl ignores uddg redirects from look-alike hosts');
+  } else {
+    fail('pickRediscoveredUrl unwrapped a redirect from a look-alike host');
+  }
+  // DuckDuckGo HTML wraps each result in a /l/?uddg= redirect — must be
+  // unwrapped, otherwise every hostname looks like duckduckgo.com and nothing
+  // ever matches the careers domain (the fallback would silently never fire).
+  const ddg = ['//duckduckgo.com/l/?uddg=' + encodeURIComponent('https://job-boards.greenhouse.io/acme/999')];
+  if (pickRediscoveredUrl(ddg, domain) === 'https://job-boards.greenhouse.io/acme/999') {
+    pass('pickRediscoveredUrl unwraps DuckDuckGo redirect links');
+  } else {
+    fail(`pickRediscoveredUrl did not unwrap DDG redirect: ${pickRediscoveredUrl(ddg, domain)}`);
+  }
+  // A look-alike host that merely contains the domain as a substring must not match.
+  if (pickRediscoveredUrl(['https://job-boards.greenhouse.io.attacker.com/x'], domain) === null) {
+    pass('pickRediscoveredUrl rejects look-alike hostnames');
+  } else {
+    fail('pickRediscoveredUrl accepted a look-alike hostname');
+  }
+} catch (e) {
+  fail(`URL rediscovery tests crashed: ${e.message}`);
+}
+
+// ── 13. BATCH RATE-LIMIT PAUSE ──────────────────────────────────
+
+console.log('\n13. Batch rate-limit pause');
+
+try {
+  const tmp = mkdtempSync(join(tmpdir(), 'co-batch-rate-'));
+  const batchDir = join(tmp, 'batch');
+  const fakeBin = join(tmp, 'bin');
+  mkdirSync(batchDir, { recursive: true });
+  mkdirSync(join(tmp, 'reports'), { recursive: true });
+  mkdirSync(join(tmp, 'data'), { recursive: true });
+  mkdirSync(fakeBin, { recursive: true });
+
+  writeFileSync(join(batchDir, 'batch-runner.sh'), readFileSync(join(ROOT, 'batch/batch-runner.sh'), 'utf-8'));
+  execFileSync('chmod', ['+x', join(batchDir, 'batch-runner.sh')]);
+  writeFileSync(join(tmp, 'merge-tracker.mjs'), 'console.log("merge fixture");\n');
+  writeFileSync(join(tmp, 'verify-pipeline.mjs'), 'console.log("verify fixture");\n');
+  writeFileSync(join(batchDir, 'batch-prompt.md'), 'URL={{URL}}\nJD={{JD_FILE}}\nREPORT={{REPORT_NUM}}\n');
+  writeFileSync(join(batchDir, 'batch-input.tsv'), [
+    'id\turl\tsource\tnotes',
+    '1\thttps://example.com/one\tfixture\t-',
+    '2\thttps://example.com/two\tfixture\t-',
+    '3\thttps://example.com/three\tfixture\t-',
+  ].join('\n') + '\n');
+  writeFileSync(join(fakeBin, 'claude'), [
+    '#!/usr/bin/env bash',
+    'echo "You\\x27ve hit your session limit · resets 12:30pm (Asia/Taipei)"',
+    'exit 1',
+  ].join('\n') + '\n');
+  execFileSync('chmod', ['+x', join(fakeBin, 'claude')]);
+
+  const env = { ...process.env, PATH: `${fakeBin}:${process.env.PATH}` };
+  const out = run('bash', [join(batchDir, 'batch-runner.sh'), '--parallel', '1', '--max-retries', '3', '--rate-limit-sleep', '0'], {
+    cwd: tmp,
+    env,
+    stdio: ['pipe', 'pipe', 'pipe'],
+  }) || '';
+  const state = readFileSync(join(batchDir, 'batch-state.tsv'), 'utf-8').trim().split('\n');
+  const first = state[1]?.split('\t') || [];
+
+  if (state.length === 2 && first[0] === '1' && first[2] === 'paused_rate_limit' && first[8] === '0' && out.includes('pausing batch')) {
+    pass('session-limit pauses batch without consuming retry budget or scheduling more jobs');
+  } else {
+    fail(`session-limit pause wrong: lines=${state.length}, first=${JSON.stringify(first)}, out=${JSON.stringify(out.slice(-240))}`);
+  }
+
+  writeFileSync(join(batchDir, 'batch-state.tsv'), [
+    'id\turl\tstatus\tstarted_at\tcompleted_at\treport_num\tscore\terror\tretries',
+    '1\thttps://example.com/one\tpaused_rate_limit\t2026-01-01T00:00:00Z\t2026-01-01T00:00:01Z\t001\t-\tsession-limit; paused\t0',
+    '2\thttps://example.com/two\tfailed\t2026-01-01T00:00:00Z\t2026-01-01T00:00:01Z\t002\t-\tworker-crash\t1',
+  ].join('\n') + '\n');
+  const dry = run('bash', [join(batchDir, 'batch-runner.sh'), '--resume-paused', '--dry-run'], {
+    cwd: tmp,
+    env,
+    stdio: ['pipe', 'pipe', 'pipe'],
+  }) || '';
+  if (dry.includes('#1: https://example.com/one') && !dry.includes('#2: https://example.com/two')) {
+    pass('--resume-paused dry-run selects paused jobs only');
+  } else {
+    fail(`--resume-paused selection wrong: ${dry}`);
+  }
+
+  rmSync(tmp, { recursive: true, force: true });
+} catch (e) {
+  fail(`Batch rate-limit pause test crashed: ${e.message}`);
+}
+
+// ── 15. BATCH RUNNER MCP ISOLATION (#506) ───────────────────────
+
+console.log('\n15. Batch runner MCP isolation');
+
+try {
+  const batchRunner = readFileSync(join(ROOT, 'batch', 'batch-runner.sh'), 'utf-8');
+  // Workers must be spawned with --strict-mcp-config so they don't inherit the
+  // parent session's MCP servers (e.g. Playwright) and deadlock fighting over a
+  // single browser when --parallel > 1 (issue #506).
+  const claudeArgsLine = batchRunner
+    .split('\n')
+    .find(l => l.includes('claude_args=('));
+  if (claudeArgsLine && claudeArgsLine.includes('--strict-mcp-config')) {
+    pass('batch workers spawn with --strict-mcp-config (no inherited MCP)');
+  } else {
+    fail('batch-runner.sh worker spawn missing --strict-mcp-config (issue #506 regression)');
+  }
+} catch (e) {
+  fail(`Batch runner MCP isolation test crashed: ${e.message}`);
+}
+
+// ── SUMMARY ─────────────────────────────────────────────────────
+
+console.log('\n' + '='.repeat(50));
+console.log(`📊 Results: ${passed} passed, ${failed} failed, ${warnings} warnings`);
+
+if (failed > 0) {
+  console.log('🔴 TESTS FAILED — do NOT push/merge until fixed\n');
+  process.exit(1);
+} else if (warnings > 0) {
+  console.log('🟡 Tests passed with warnings — review before pushing\n');
+  process.exit(0);
+} else {
+  console.log('🟢 All tests passed — safe to push/merge\n');
+  process.exit(0);
+}

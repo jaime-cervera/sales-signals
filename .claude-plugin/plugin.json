@@ -1,0 +1,15 @@
+{
+  "name": "sales-signals",
+  "version": "0.1.0",
+  "description": "Sales-Signals — B2B buying-signal prospecting: discover companies showing buying signals, qualify accounts, extract decision-maker contacts across multiple ICPs",
+  "skills": true,
+  "permissions": {
+    "allow": [
+      "Bash(node:*)",
+      "WebFetch(domain:boards-api.greenhouse.io)",
+      "WebFetch(domain:jobs.ashbyhq.com)",
+      "WebFetch(domain:*.unipile.com)",
+      "WebSearch"
+    ]
+  }
+}

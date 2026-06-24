@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+# cops — thin wrapper: run any Sales-Signals command inside the docker container.
+#
+# Examples:
+#   ./cops doctor
+#   ./cops verify
+#   ./cops scan
+#   ./cops node bin/signals.mjs scan --icp acme
+#   ./cops shell                     # interactive bash
+#   ./cops up | down | rebuild | logs
+#
+# Anything not matching a known subcommand is forwarded to npm run <subcommand>
+# when package.json defines it, otherwise executed verbatim inside the container.
+
+set -euo pipefail
+
+cd "$(dirname "$0")"
+
+SERVICE="sales-signals"
+
+# Forward the active ICP into the container. `cops` is only an optional Docker
+# passthrough (the host-side launcher is bin/signals.mjs); when used, it must
+# carry CAREER_OPS_ICP so the in-container scripts scope to the same ICP. The
+# +-expansion keeps this safe under `set -u` when the array is empty.
+ICP_ENV=()
+if [ -n "${CAREER_OPS_ICP:-}" ]; then
+  ICP_ENV=(-e "CAREER_OPS_ICP=${CAREER_OPS_ICP}")
+fi
+
+ensure_up() {
+  if ! docker compose ps --services --filter "status=running" | grep -qx "$SERVICE"; then
+    docker compose up -d >/dev/null
+  fi
+}
+
+case "${1:-}" in
+  ""|help|-h|--help)
+    sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
+    exit 0
+    ;;
+  up)
+    docker compose up -d
+    exit 0
+    ;;
+  down)
+    docker compose down
+    exit 0
+    ;;
+  rebuild)
+    docker compose build --no-cache
+    docker compose up -d
+    exit 0
+    ;;
+  logs)
+    shift
+    docker compose logs -f "$@"
+    exit 0
+    ;;
+  shell|bash)
+    ensure_up
+    exec docker compose exec -it "$SERVICE" bash
+    ;;
+  node|npm|npx|go|bash|sh)
+    ensure_up
+    exec docker compose exec "${ICP_ENV[@]+"${ICP_ENV[@]}"}" -it "$SERVICE" "$@"
+    ;;
+esac
+
+# Map known npm scripts → `npm run <name>`. Anything else is forwarded raw.
+cmd="$1"; shift || true
+
+case "$cmd" in
+  doctor|verify|normalize|dedup|merge|liveness|scan)
+    ensure_up
+    exec docker compose exec "${ICP_ENV[@]+"${ICP_ENV[@]}"}" -it "$SERVICE" npm run --silent "$cmd" -- "$@"
+    ;;
+  *)
+    ensure_up
+    exec docker compose exec "${ICP_ENV[@]+"${ICP_ENV[@]}"}" -it "$SERVICE" "$cmd" "$@"
+    ;;
+esac

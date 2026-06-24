@@ -1,0 +1,63 @@
+# signals.yml — Buying-Signal configuration for ONE ICP (example)
+#
+# Copy to icps/<slug>/signals.yml (the onboarding "icp" mode does this for you).
+# This reuses the proven ATS-scanner config shape, repurposed: title_filter now
+# describes the ROLE A PROSPECT IS HIRING (the buying signal), not a job you want.
+# See templates/signals-schema.md for the locked schema.
+
+# -- Buying-signal role keywords --
+# A scanned title is a signal when ≥1 positive matches AND 0 negatives match.
+title_filter:
+  positive:
+    - "LLMOps"
+    - "ML Platform"
+    - "AI Infrastructure"
+    - "MLOps"
+    - "Machine Learning Platform"
+  negative:
+    - "Intern"
+    - "Junior"
+  seniority_boost:   # raise signal strength, not required
+    - "Senior"
+    - "Staff"
+    - "Principal"
+    - "Lead"
+    - "Head"
+    - "Director"
+    - "VP"
+
+# -- Geographic gating (optional) --
+location_filter:
+  always_allow:
+    - "United States"
+  allow:
+    - "Remote"
+    - "United States"
+    - "Europe"
+  block:
+    - "India"
+
+# -- Known companies to monitor directly (optional, ATS providers) --
+tracked_companies:
+  - name: Anthropic
+    careers_url: https://job-boards.greenhouse.io/anthropic
+    api: https://boards-api.greenhouse.io/v1/boards/anthropic/jobs
+    enabled: true
+
+# -- Multi-employer discovery sources --
+# Unipile LinkedIn Jobs is the PRIMARY discovery engine (R3): one entry → many
+# companies. Needs UNIPILE_* in .env; degrades gracefully (scan continues on the
+# ATS + WebSearch sources) if creds/Sales-Nav are absent.
+job_boards:
+  - name: LinkedIn Jobs — buying signal
+    provider: unipile-jobs
+    enabled: true
+    query: "LLMOps OR ML Platform Engineer OR MLOps"
+    location: "United States"
+    limit: 25
+
+# -- WebSearch complement (optional) --
+search_queries:
+  - name: Greenhouse — LLMOps
+    query: 'site:job-boards.greenhouse.io "LLMOps" OR "ML Platform Engineer"'
+    enabled: true

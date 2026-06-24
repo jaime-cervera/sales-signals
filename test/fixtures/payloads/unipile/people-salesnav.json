@@ -1,0 +1,38 @@
+{
+  "object": "LinkedinSearch",
+  "items": [
+    {
+      "type": "PEOPLE",
+      "id": "ACwAAASNCJcBS2NERCgi0j_f7_oYqCSbTGsNYBc",
+      "name": "Luciano Bana",
+      "first_name": "Luciano",
+      "last_name": "Bana",
+      "member_urn": "urn:li:member:76351639",
+      "public_identifier": "luciano-bana-b876a021",
+      "public_profile_url": "https://www.linkedin.com/in/luciano-bana-b876a021",
+      "profile_url": "https://www.linkedin.com/sales/lead/ACwAAASNCJcBS2NERCgi0j_f7_oYqCSbTGsNYBc,NAME_SEARCH,NqOz",
+      "profile_picture_url": "https://media.licdn.com/dms/image/v2/example/profile-displayphoto.jpg",
+      "network_distance": "DISTANCE_3",
+      "location": "United States",
+      "headline": "VP of Engineering at Globex",
+      "pending_invitation": false,
+      "premium": true,
+      "open_profile": true,
+      "current_positions": [
+        {
+          "company": "Globex",
+          "company_id": null,
+          "description": "Leads the platform and ML infrastructure org.",
+          "location": null,
+          "role": "VP of Engineering",
+          "start": { "month": 3, "year": 2021 },
+          "tenure_at_company": { "years": 5 },
+          "tenure_at_role": { "years": 5 }
+        }
+      ]
+    }
+  ],
+  "config": { "params": { "api": "sales_navigator", "category": "people", "keywords": "VP Engineering Globex" } },
+  "paging": { "start": 0, "page_count": 1, "total_count": 1 },
+  "cursor": null
+}

@@ -1,0 +1,21 @@
+# Fixture ICP: acme — minimal profile (Phase-1 legacy shape; becomes icp.md in Phase 4).
+candidate:
+  full_name: "Acme Vendor"
+  email: "acme@example.com"
+  location: "Remote"
+
+target_roles:
+  primary:
+    - "LLMOps Engineer"
+  archetypes:
+    - name: "AI Infrastructure"
+      level: "Senior/Staff"
+      fit: "primary"
+
+compensation:
+  target_range: "n/a"
+  currency: "USD"
+
+location:
+  country: "United States"
+  timezone: "PST"

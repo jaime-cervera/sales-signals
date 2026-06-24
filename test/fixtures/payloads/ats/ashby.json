@@ -1,0 +1,23 @@
+{
+  "jobs": [
+    {
+      "title": "Senior AI Infrastructure Engineer",
+      "jobUrl": "https://jobs.ashbyhq.com/exampleco/1111-2222",
+      "location": "Remote - Europe",
+      "publishedAt": "2026-01-14T12:00:00.000Z",
+      "compensation": {
+        "interval": "1 YEAR",
+        "minValue": 140000,
+        "maxValue": 180000,
+        "currency": "USD"
+      }
+    },
+    {
+      "title": "LLM Platform Engineer",
+      "jobUrl": "https://jobs.ashbyhq.com/exampleco/3333-4444",
+      "location": "London, UK",
+      "publishedAt": "2026-01-16T12:00:00.000Z",
+      "compensation": null
+    }
+  ]
+}

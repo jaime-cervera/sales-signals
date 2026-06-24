@@ -1,0 +1,26 @@
+# vendor.yml — Seller (vendor) identity + global defaults for Sales-Signals.
+# Copy to config/vendor.yml and fill in. This is the ONE seller; ICPs (in icps/)
+# are the many customer profiles you sell that offering into.
+
+vendor:
+  name: "Your Company, Inc."
+  # One-line description of what you sell (the thing every ICP buys).
+  offering: "LLM observability & evaluation platform"
+  website: "https://yourcompany.example"
+  # Default geography applied to ICPs that don't set their own location_filter.
+  default_geography: "United States"
+
+# Unipile connection (LinkedIn Jobs discovery + Sales Navigator contacts).
+# Only a REFERENCE lives here — the secret values live in .env (gitignored):
+#   UNIPILE_DSN, UNIPILE_API_KEY, UNIPILE_ACCOUNT_ID
+unipile:
+  # Human label for which connected LinkedIn account these signals run against.
+  account_ref: "primary-linkedin"
+  # Whether Sales Navigator is available on that account (set true once confirmed
+  # in the Unit 0.4 spike — contact extraction needs it).
+  sales_navigator: false
+
+# Global defaults applied across ICPs (each ICP may override).
+defaults:
+  # Minimum ICP-fit score (1-5) before contact extraction is offered.
+  contact_extraction_min_score: 4.0

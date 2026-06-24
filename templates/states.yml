@@ -1,0 +1,77 @@
+# Sales-Signals — Canonical Sales Pipeline States
+# Source of truth for the CRM tracker (writer) and dashboard (reader).
+#
+# IMPORTANT: states.yml is loaded directly only by tracker.mjs. FIVE other
+# places hardcode their own copy of these states/aliases and MUST be kept in
+# lockstep (audit): verify-pipeline.mjs, merge-tracker.mjs, dedup-tracker.mjs,
+# normalize-statuses.mjs, and Go dashboard/internal/data/career.go.
+#
+# Rule: the Status field in prospects.md must contain EXACTLY one of these
+# labels (case-insensitive). No markdown bold (**), no dates, no extra text.
+#
+# Append-only invariant: an account row's status is the MAX `rank` ever reached;
+# it is never downgraded by a later weaker signal and the row is never deleted.
+
+states:
+  - id: new
+    label: New
+    rank: 1
+    aliases: [nuevo, detected, signal]
+    description: Buying signal detected, not yet qualified
+    dashboard_group: new
+
+  - id: qualified
+    label: Qualified
+    rank: 2
+    aliases: [cualificado, qualify]
+    description: Scored, fits the ICP, worth pursuing
+    dashboard_group: qualified
+
+  - id: contacted
+    label: Contacted
+    rank: 3
+    aliases: [contactado, outreach, reached_out]
+    description: Outreach sent to a decision-maker
+    dashboard_group: contacted
+
+  - id: replied
+    label: Replied
+    rank: 4
+    aliases: [respondido, responded]
+    description: Prospect replied to outreach
+    dashboard_group: replied
+
+  - id: meeting
+    label: Meeting
+    rank: 5
+    aliases: [reunion, meeting_booked, demo]
+    description: Meeting / demo booked
+    dashboard_group: meeting
+
+  - id: opportunity
+    label: Opportunity
+    rank: 6
+    aliases: [oportunidad, deal, opp]
+    description: Active sales opportunity / open deal
+    dashboard_group: opportunity
+
+  - id: won
+    label: Won
+    rank: 7
+    aliases: [ganado, closed_won, customer]
+    description: Closed-won — became a customer
+    dashboard_group: won
+
+  - id: lost
+    label: Lost
+    rank: 0
+    aliases: [perdido, closed_lost]
+    description: Closed-lost — deal did not close
+    dashboard_group: lost
+
+  - id: disqualified
+    label: Disqualified
+    rank: 0
+    aliases: [descalificado, disqualify, not_a_fit, no_fit, skip]
+    description: Not a fit (no genuine signal / out of ICP)
+    dashboard_group: disqualified

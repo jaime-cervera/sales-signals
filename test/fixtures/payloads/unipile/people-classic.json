@@ -1,0 +1,30 @@
+{
+  "object": "LinkedinSearch",
+  "items": [
+    {
+      "type": "PEOPLE",
+      "id": "ACoAAAdHsOUBYtAunOfY0wJIbiwgewolov5X55M",
+      "name": "Piyush Narwani",
+      "member_urn": "urn:li:member:122138853",
+      "profile_url": "https://www.linkedin.com/in/piyushnarwani?miniProfileUrn=urn%3Ali%3Afs_miniProfile%3AACoAAAdHsOUBYtAunOfY0wJIbiwgewolov5X55M",
+      "network_distance": "DISTANCE_2",
+      "location": "San Francisco, CA",
+      "industry": "Computer Software",
+      "headline": "VP of Engineering at Acme"
+    },
+    {
+      "type": "PEOPLE",
+      "id": "ACoAAB1234567abcdefHEADofML",
+      "name": "Dana Okafor",
+      "member_urn": "urn:li:member:998877665",
+      "profile_url": "https://www.linkedin.com/in/dana-okafor?miniProfileUrn=urn%3Ali%3Afs_miniProfile%3AACoAAB1234567abcdefHEADofML",
+      "network_distance": "DISTANCE_3",
+      "location": "Remote - US",
+      "industry": "Internet",
+      "headline": "Head of ML at Acme"
+    }
+  ],
+  "config": { "params": { "api": "classic", "category": "people", "keywords": "VP Engineering Acme" } },
+  "paging": { "start": 0, "page_count": 2, "total_count": 2 },
+  "cursor": null
+}

@@ -1,0 +1,36 @@
+{
+  "name": "sales-signals",
+  "version": "0.1.0",
+  "description": "Sales-Signals — B2B buying-signal prospecting CRM. Discover companies showing buying signals, qualify accounts, extract decision-maker contacts. Works with any AI coding CLI (Claude Code, OpenCode, Gemini, Codex, Qwen).",
+  "private": true,
+  "scripts": {
+    "doctor": "node doctor.mjs",
+    "verify": "node verify-pipeline.mjs",
+    "normalize": "node normalize-statuses.mjs",
+    "dedup": "node dedup-tracker.mjs",
+    "merge": "node merge-tracker.mjs",
+    "liveness": "node check-liveness.mjs",
+    "scan": "node scan.mjs",
+    "scan:full": "node scan-ats-full.mjs",
+    "validate:signals": "node validate-signals.mjs",
+    "tracker": "node tracker.mjs",
+    "patterns": "node analyze-patterns.mjs"
+  },
+  "keywords": [
+    "ai",
+    "sales-signals",
+    "buying-signals",
+    "b2b-prospecting",
+    "sales-intelligence",
+    "crm",
+    "claude-code",
+    "opencode",
+    "automation"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "dotenv": "^17.0.0",
+    "js-yaml": "^4.1.1",
+    "playwright": "1.61.0"
+  }
+}

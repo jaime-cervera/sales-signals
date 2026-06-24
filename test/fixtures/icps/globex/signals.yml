@@ -1,0 +1,19 @@
+# Fixture ICP: globex — seeded for ICP-isolation tests (distinct data from acme).
+# Phase-1 legacy `portals.yml` shape (renamed to signals.yml in Phase 4 with its tests).
+title_filter:
+  positive:
+    - "Data Engineer"
+    - "Analytics Engineer"
+    - "Data Platform"
+  negative:
+    - "Junior"
+  seniority_boost:
+    - "Senior"
+    - "Lead"
+
+tracked_companies:
+  - name: Monzo
+    careers_url: https://jobs.lever.co/monzo
+    enabled: true
+
+job_boards: []

@@ -1,0 +1,9 @@
+{
+  "_note": "REAL CAPTURE — GET /api/v1/linkedin/search/parameters?type=LOCATION&keywords=Spain (2026-06-20). Used to resolve a location NAME → LinkedIn numeric geo id for the classic jobs `location` array param. geo ids are public LinkedIn identifiers (not secret). Trimmed to 3 items.",
+  "object": "LinkedinSearchParametersList",
+  "items": [
+    { "object": "LinkedinSearchParameter", "title": "España", "id": "105646813" },
+    { "object": "LinkedinSearchParameter", "title": "Comunidad de Madrid, España", "id": "103335767" },
+    { "object": "LinkedinSearchParameter", "title": "Cataluña, España", "id": "100377885" }
+  ]
+}
